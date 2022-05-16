@@ -15,6 +15,7 @@
 auto ngraph::snippets::getRegisters(std::shared_ptr<ngraph::Node>& n) -> ngraph::snippets::RegInfo {
     OV_ITT_SCOPED_TASK(ngraph::pass::itt::domains::SnippetsTransform, "Snippets::getRegisters")
     auto rt = n->get_rt_info();
+
     // ToDo: change to reg_t
     std::vector<size_t> rin, rout;
 
@@ -25,11 +26,11 @@ auto ngraph::snippets::getRegisters(std::shared_ptr<ngraph::Node>& n) -> ngraph:
         }
     }
 
-    for (auto input : n->inputs()) {
+    for (const auto& input : n->inputs()) {
         auto rt = input.get_source_output().get_node_shared_ptr()->get_rt_info();
         auto it_rt = rt.find("reginfo");
         if (it_rt != rt.end()) {
-            for (auto reg : it_rt->second.as<std::vector<size_t>>()) {
+            for (auto& reg : it_rt->second.as<std::vector<size_t>>()) {
                 rin.push_back(reg);
             }
         }

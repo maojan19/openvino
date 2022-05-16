@@ -14,9 +14,9 @@ namespace op {
 
 /**
  * @interface TileScheduler
- * @brief Contains a set of Tiles (usually one vector and one scalar) and performs necessary preparations
+ * @brief Contains a set of Tiles (currently one vector and one scalar) and performs necessary preparations
  * before the Tiles could be executed: calculates offsets, sets proper work amounts, decrement pointers if the same data
- * have to read several times (broadcasting).
+ * have to be read several times (broadcasting).
  * @ingroup snippets
  */
 class TileScheduler : public ngraph::op::Op {
@@ -32,8 +32,6 @@ public:
     std::shared_ptr<Node> clone_with_new_inputs(const OutputVector& inputs) const override {
         return std::make_shared<TileScheduler>(vector_region, scalar_region);
     }
-//    std::shared_ptr<ngraph::snippets::op::Tile> vectorTile;
-//    std::shared_ptr<ngraph::snippets::op::Tile> scalarTile;
     const void *compile_params;
 };
 

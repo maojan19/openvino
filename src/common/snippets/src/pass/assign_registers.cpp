@@ -25,8 +25,8 @@ bool ngraph::snippets::pass::AssignRegisters::run_on_model(const std::shared_ptr
 
     size_t rdx = 0;
     std::map<std::shared_ptr<descriptor::Tensor>, Reg> regs;
-    for (auto op : stmts) {
-        for (auto output : op->outputs()) {
+    for (const auto& op : stmts) {
+        for (const auto& output : op->outputs()) {
             regs[output.get_tensor_ptr()] = rdx++;
         }
     }
@@ -34,9 +34,9 @@ bool ngraph::snippets::pass::AssignRegisters::run_on_model(const std::shared_ptr
     std::vector<std::set<Reg>> used;
     std::vector<std::set<Reg>> def;
 
-    for (auto op : stmts) {
+    for (const auto& op : stmts) {
         std::set<Reg> u;
-        for (auto input : op->inputs()) {
+        for (const auto& input : op->inputs()) {
             if (regs.count(input.get_tensor_ptr())) {
                 u.insert(regs[input.get_tensor_ptr()]);
             }
@@ -45,7 +45,7 @@ bool ngraph::snippets::pass::AssignRegisters::run_on_model(const std::shared_ptr
 
         std::set<Reg> d;
         if (!std::dynamic_pointer_cast<snippets::op::Store>(op)) {
-            for (auto output : op->outputs()) {
+            for (const auto& output : op->outputs()) {
                 d.insert(regs[output.get_tensor_ptr()]);
             }
         }
@@ -64,8 +64,8 @@ bool ngraph::snippets::pass::AssignRegisters::run_on_model(const std::shared_ptr
         for (size_t n = 0; n < stmts.size(); n++) {
             auto node = stmts[n];
             if (!std::dynamic_pointer_cast<snippets::op::Store>(node)) {
-                for (auto out : node->outputs()) {
-                    for (auto port : out.get_target_inputs()) {
+                for (const auto& out : node->outputs()) {
+                    for (const auto& port : out.get_target_inputs()) {
                         auto pos = std::find(stmts.begin(), stmts.end(), port.get_node()->shared_from_this());
                         if (pos != stmts.end()) {
                             auto k = pos-stmts.begin();
@@ -135,32 +135,31 @@ bool ngraph::snippets::pass::AssignRegisters::run_on_model(const std::shared_ptr
 
     std::map<std::shared_ptr<descriptor::Tensor>, Reg> physical_regs;
 
-    for (auto reg : regs) {
+    for (const auto& reg : regs) {
         physical_regs[reg.first] = register_map[reg.second];
     }
     const auto num_parameters = f->get_parameters().size();
-    for (auto n : f->get_ordered_ops()) {
+    for (const auto& n : f->get_ordered_ops()) {
         auto& rt = n->get_rt_info();
         std::vector<size_t> regs;
         regs.reserve(n->outputs().size());
-        // Note that Parameter and Result store general-purpose register index,
-        // While "regular" ops store vector regs indexes
-        // This ambiguity should be handled in emitters based on emitted operation semantics
-        if (auto param = ov::as_type_ptr<ov::op::v0::Parameter>(n)) {
+        /* The main idea here is that each operation stores its output regs in rt["reginfo"]. Input and output regs are
+         * then derived by parsing node's and parent's rt["reginfo"], look into ngraph::snippets::getRegisters for details.
+         * Note also that Parameter and Result store general-purpose register index, because they work with memory
+         * (memory pointer is stored in grp). All other "regular" ops store vector regs indexes, since calculations are
+         * performed on registers.
+         */
+        if (is_type<ov::op::v0::Result>(n)) {
+            continue;
+        } else if (const auto& param = ov::as_type_ptr<ov::op::v0::Parameter>(n)) {
             regs.push_back(f->get_parameter_index(param));
-            rt["reginfo"] = regs;
-            continue;
-        } else if (auto store = ov::as_type_ptr<ngraph::snippets::op::Store>(n)) {
+        } else if (const auto& store = ov::as_type_ptr<ngraph::snippets::op::Store>(n)) {
             regs.push_back(f->get_result_index(store) + num_parameters);
-            rt["reginfo"] = regs;
-            continue;
-        } else if (auto result = ov::as_type_ptr<ov::op::v0::Result>(n)) {
-            continue;
-        }
-
-        for (auto output : n->outputs()) {
-            auto allocated = physical_regs[output.get_tensor_ptr()];
-            regs.push_back(allocated);
+        } else {
+            for (const auto& output : n->outputs()) {
+                auto allocated = physical_regs[output.get_tensor_ptr()];
+                regs.push_back(allocated);
+            }
         }
         rt["reginfo"] = regs;
     }
