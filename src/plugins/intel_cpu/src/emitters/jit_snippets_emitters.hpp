@@ -16,7 +16,7 @@ namespace intel_cpu {
 
 using EmitterCode = std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo>;
 
-#define SNIPPETS_MAX_SNIPPETS_DIMS 7
+#define SNIPPETS_MAX_SNIPPETS_DIMS 12
 #define SNIPPETS_MAX_HARNESS_DIMS 5
 #define SNIPPETS_MAX_TILE_RANK 2
 #define GET_OFF(field) offsetof(jit_snippets_call_args, field)
@@ -90,7 +90,12 @@ public:
                    const std::vector<size_t> &out,
                    const std::vector<size_t> &pool,
                    const std::vector<size_t> &gpr) const override;
+
 private:
+    void validate_arguments(const std::vector<size_t> &in,
+                            const std::vector<size_t> &out,
+                            const std::vector<size_t> &pool,
+                            const std::vector<size_t> &gpr) const override;
     void emit_impl(const std::vector<size_t>& in,
                    const std::vector<size_t>& out,
                    const std::vector<size_t>& pool,
@@ -219,8 +224,8 @@ public:
     size_t get_inputs_num() const override {return 1;}
 
 protected:
-    static size_t getEA(const std::shared_ptr<ov::Node>& n);
-    size_t ea;
+//    static size_t getEA(const std::shared_ptr<ov::Node>& n);
+//    size_t ea;
 };
 
 class StoreEmitter : public MemoryEmitter  {
