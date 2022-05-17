@@ -100,13 +100,13 @@ public:
 protected:
     std::shared_ptr<ov::Model> initOriginal() const override;
 };
-/// Eltwise graph with 10 inputs and 2 outputs to Concat.
+/// Eltwise graph with 10 inputs and 2 outputs.
 /// Needed to test for a max number of inputs+outputs allowed.
 // in1   in2   in3 ... in10
 // Sinh  Sinh  Sinh ...Sinh
 // ........................
 //    Subtract    Power
-//      Concatenation
+//          \   Sinh
 //          Result
 class EltwiseMaxNumParamsSinhFunction : public SnippetsFunctionBase {
 public:

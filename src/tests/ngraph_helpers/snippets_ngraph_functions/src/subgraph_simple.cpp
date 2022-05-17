@@ -123,10 +123,10 @@ std::shared_ptr<ov::Model> EltwiseMaxNumParamsSinhFunction::initOriginal() const
         auto mul_node = std::make_shared<op::v1::Multiply>(add[i * 2], add[i * 2 + 1]);
         mul.push_back(mul_node);
     }
-    std::shared_ptr<Node> sub = std::make_shared<op::v1::Subtract>(mul[0], mul[1]);
-    std::shared_ptr<Node> power = std::make_shared<op::v1::Power>(add.back(), sub);
-    auto concat = std::make_shared<op::v0::Concat>(NodeVector {sub, power}, 0);
-    return std::make_shared<ov::Model>(concat, params);
+    auto sub = std::make_shared<op::v1::Subtract>(mul[0], mul[1]);
+    auto power = std::make_shared<op::v1::Power>(add.back(), sub);
+    auto exit_sinh = std::make_shared<op::v0::Sinh>(power);
+    return std::make_shared<ov::Model>(NodeVector{sub, exit_sinh}, params);
 }
 
 std::shared_ptr<ov::Model> MatMulEltwiseBranchesFunction::initOriginal() const {
