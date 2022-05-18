@@ -41,7 +41,6 @@ void MaxNumParamsEltwiseSinh::SetUp() {
 
 TEST_P(MaxNumParamsEltwiseSinh, CompareWithRefImpl) {
     run();
-    ov::pass::Serialize("model.xml", "model.bin").run_on_model(function);
     validateNumSubgraphs();
 }
 

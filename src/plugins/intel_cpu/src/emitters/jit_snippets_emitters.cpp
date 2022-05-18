@@ -410,14 +410,6 @@ void StoreEmitter::emit_impl(const std::vector<size_t>& in,
                              const std::vector<size_t>& pool,
                              const std::vector<size_t>& gpr,
                              const ov::intel_cpu::emitter_context *emit_context) const {
-    std::cerr << "Store: in :";
-    for (auto o : in)
-        std::cerr << o << " ";
-    std::cerr << "\n";
-    std::cerr << "Store: out : ";
-    for (auto o : out)
-        std::cerr << o << " ";
-    std::cerr << "\n";
     if (host_isa_ == dnnl::impl::cpu::x64::sse41) {
         emit_isa<dnnl::impl::cpu::x64::sse41>(in, out);
     } else if (host_isa_ == dnnl::impl::cpu::x64::avx2) {
@@ -475,7 +467,6 @@ void ScalarStoreEmitter::emit_isa(const std::vector<size_t> &in, const std::vect
 LoadEmitter::LoadEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
                          const std::shared_ptr<ov::Node>& n)
                          : MemoryEmitter(h, isa, n), shouldPostIncrement(*n->get_input_shape(0).rbegin() != 1) {
-    std::cerr << "LoadEmitterInvoked\n";
     in_out_type_ = emitter_in_out_map::gpr_to_vec;
 }
 
@@ -484,14 +475,6 @@ void LoadEmitter::emit_impl(const std::vector<size_t>& in,
                             const std::vector<size_t>& pool,
                             const std::vector<size_t>& gpr,
                             const ov::intel_cpu::emitter_context *emit_context) const {
-    std::cerr << "Load: in :";
-    for (auto o : in)
-        std::cerr << o << " ";
-    std::cerr << "\n";
-    std::cerr << "Load: out : ";
-    for (auto o : out)
-        std::cerr << o << " ";
-    std::cerr << "\n";
     if (host_isa_ == dnnl::impl::cpu::x64::sse41) {
         emit_isa<dnnl::impl::cpu::x64::sse41>(in, out);
     } else if (host_isa_ == dnnl::impl::cpu::x64::avx2) {

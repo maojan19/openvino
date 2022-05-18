@@ -10,8 +10,6 @@ namespace ov {
 namespace test {
 void SnippetsTestsCommon::validateNumSubgraphs() {
     const auto& compiled_model = compiledModel.get_runtime_model();
-    auto tmp = std::const_pointer_cast<ov::Model>(compiled_model);
-    ov::pass::Serialize("compiled.xml", "compiled.bin").run_on_model(tmp);
     size_t num_subgraphs = 0;
     size_t num_nodes = 0;
     for (const auto &op : compiled_model->get_ops()) {
