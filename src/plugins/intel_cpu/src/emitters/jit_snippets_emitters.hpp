@@ -32,11 +32,28 @@ struct jit_snippets_compile_args {
     std::vector<size_t> output_dims = {};
 };
 ///
-/// \brief    Kernel is the only entry point to Codogen Jit compilation. Kernel calculates appropriate data offsets,
-/// and invokes enclosed outer Tiles. Only 2d Tiles are currently supported, so the emitters should
-/// be organized in the following way:
-/// KernelEmitter {          /* entry point */
-///     TileEmitter {        /* outer tile */
+/// \brief jit_container_emitter designed to wrap Emitters that contain other Emitters (presently KernelEmitter,
+/// TileSchedulerEmitter and TileEmitter). This is needed to provide common interface for register mapping
+/// (abstract to physical) and nested code access.
+///
+class jit_container_emitter: public jit_emitter {
+public:
+    jit_container_emitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
+                          const std::shared_ptr<ov::Node>& n);
+    std::vector<EmitterCode> get_nested_code();
+protected:
+    // maps gpr and vec abstract registers to physical ones. Physical reg indexes are taken from the provided pools
+    // (the first 2 args). All the used gpr and vec registers are also stored in the provided sets (the second 2 args).
+    void map_abstract_registers(const std::vector<size_t>&,  const std::vector<size_t>&,
+                                std::set<size_t>&, std::set<size_t>&);
+    std::vector<EmitterCode> body;
+};
+///
+/// \brief    Kernel is the only entry point to Codogen Jit compilation. Kernel perform abstract-to-physical register
+/// mapping and creates pools of available gpr and vec registers. Kernel is expected to contain (at least one)
+/// TileSchedulerEmitter. In general the enclosed emitters should be organized in the following way:
+/// KernelEmitter {          /* entry point, maps registers, creates pools of available registers */
+///     TileSchedulerEmitter { /* executes required inner, avoids emitting code that won't be executed */
 ///         TileEmitter {    /* inner vector tile */
 ///             ...          /* All the necessary Load/Strore/elementwise emitters */
 ///         }
@@ -45,18 +62,9 @@ struct jit_snippets_compile_args {
 ///         }
 ///     }
 /// }
-/// Note that Kernel params are passed directly to the emit_code(). The vector of inputs should contain 2 arguments, the
-/// output vector should be empty. Input parameters
+/// Note that Kernel doesn't accept any input arguments.
 ///
-/// \param      in[0]       The number of the node inputs
-/// \param      in[1]      The number of the node outputs
-///
-// Todo: Scheduler dims and offsets are currently calculated in Subgraph node and passed to the KernelEmitter.
-//  However, it seems more natural to calculate all the offsets right in the Kernel op, because the calculation is
-//  not device-specific. It is based only on input/output dims (which we already know) and harness num dims
-//  (which we should pass from the plugin). It seems also better to wrap the enclosed emitters in tiles in the Kernel op
-//  and avoid creating empty tiles.
-class KernelEmitter : public jit_emitter {
+class KernelEmitter : public jit_container_emitter {
 public:
     KernelEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
                   const std::shared_ptr<ov::Node>& n);
@@ -77,10 +85,21 @@ private:
                    const std::vector<size_t>& gpr,
                    const ov::intel_cpu::emitter_context *emit_context) const override;
 
-    std::vector<EmitterCode> body;
+    std::vector<size_t> gp_regs_pool;
+    std::vector<size_t> gp_regs_used;
+    std::vector<size_t> vec_regs_pool;
 };
+///
+/// \brief  TileSchedulerEmitter contains Tiles to be executed (presently vector and scalar). It calculates data offsets
+/// and work amounts, performs data pointer decrements if necessary. It also performs some Tile optimizations: scalar/vector
+/// tiles are emitted only if necessary; Tile body could be emitted directly, if only one Tile evaluation is required.
+///
+/// \param      in[0]      The number of the node inputs
+/// \param      in[1]      The number of the node outputs
+/// \param      in[2]      The number of elements that fits into vector register
+///
 
-class TileSchedulerEmitter : public jit_emitter {
+class TileSchedulerEmitter : public jit_container_emitter {
 public:
     TileSchedulerEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
                          const std::shared_ptr<ov::Node>& n);
@@ -103,33 +122,19 @@ private:
                    const ov::intel_cpu::emitter_context *emit_context) const override;
 
     jit_snippets_compile_args jcp;
-    EmitterCode vector_tile;
-    std::vector<EmitterCode> vector_tile_body;
-    EmitterCode scalar_tile;
-    std::vector<EmitterCode> scalar_tile_body;
 };
 
 ///
 /// \brief    Tile is designed to organize loop over the input and output data. It is essentially a for(...) loop:
-/// it calculates the total number of iterations, performs operations specified by enclosed emitters, advances iteration counters
+/// it performs operations specified by enclosed emitters, advances iteration counters
 /// and breaks when necessary.
 ///
 /// \param      in[0]    The number of input entities (or scheduler counts) processed during one iteration of the tile.
-/// It is expected to be 1 for outer or scalar tiles and vlen for vector tiles.
-/// \param      in[1]    Increment of the previous Tile in current dimension. Must be 0 if this is the first Tile.
-/// So previous_inc is zero for outer and vector tiles (the are the first in dim) and vlen for scalar tiles (they usually go after vector Tiles).
-/// \param      in[2]    sum number inputs and number of outputs of the node.
-/// \param      in[3]    dimension of the tile. Note that only 2d Tile are currently supported, so dim is 0 for outer tiles, 1 for inner tiles.
-///
-// Todo: Inner and outer tiles have different semantics. For example, outer tile always has the increment == 1, and it can contain only
-//  tile emitters (one outer or two inner). So it seems better to create different classes for inner and outer tiles.
-// Todo: Currently data pointers incremented after each read/write in Load/Store emitters, so we have to decrement them here
-//  if the same data needs to be read twice. Better to move all the pointer increments to TileEmitter and avoid the increments if necessary.
-class TileEmitter : public jit_emitter {
+///  It is expected to be 1 for outer or scalar tiles and vlen for vector tiles.
+class TileEmitter : public jit_container_emitter {
 public:
     TileEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa, const std::shared_ptr<ov::Node>& n);
 
-    std::vector<EmitterCode> get_body() {return body;}
     size_t get_inputs_num() const override {return 0;}
     void emit_code(const std::vector<size_t> &in,
                    const std::vector<size_t> &out,
@@ -145,8 +150,6 @@ private:
                    const std::vector<size_t>& pool,
                    const std::vector<size_t>& gpr,
                    const ov::intel_cpu::emitter_context *emit_context) const override;
-
-    std::vector<EmitterCode> body;
 };
 
 class NopEmitter : public jit_emitter {

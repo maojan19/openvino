@@ -11,82 +11,96 @@ using namespace Xbyak;
 
 namespace ov {
 namespace intel_cpu {
-// Define some helper functions in the anonymous namespace
-namespace {
-
-void remove_regs_from_pool(std::vector<size_t>& pool, const std::vector<size_t>& to_remove) {
-    // It's important to keep the order of other elements
-    for (const auto &reg_num : to_remove) {
-        pool.erase(std::remove(pool.begin(), pool.end(), reg_num), pool.end());
-    }
+jit_container_emitter::jit_container_emitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
+                      const std::shared_ptr<ov::Node>& n) : jit_emitter(h, isa, n) {
+    in_out_type_ = emitter_in_out_map::gpr_to_gpr;
 }
-void add_regs_to_pool(std::vector<size_t>& pool, const std::vector<size_t>& to_add) {
-    std::vector<size_t> sorted_to_add{to_add};
-    std::sort(sorted_to_add.begin(), sorted_to_add.end());
-    std::vector<size_t> result(pool.size() + to_add.size());
 
-    std::merge(pool.begin(), pool.end(), sorted_to_add.begin(), sorted_to_add.end(), result.begin());
-    pool = std::move(result);
+std::vector<EmitterCode> jit_container_emitter::get_nested_code() {
+    return body;
 }
-/*
- * This function calls emitters for code and maps abstract registers (emitter args to physical ones)
- */
-EmitterCode map_regs(const EmitterCode& code, const std::vector<size_t> &vec,  const std::vector<size_t> &gpr) {
-    std::vector<size_t> gp_regs_pool{gpr};
-    const auto& emitter = code.first;
-    std::vector<size_t> in_abstract_regs;
-    std::vector<size_t> out_abstract_regs;
-    std::tie(in_abstract_regs, out_abstract_regs) = code.second;
-    std::vector<size_t> in_physical_regs;
-    std::vector<size_t> out_physical_regs;
-    auto abstract_to_physical = [](const std::vector<size_t>& abstract_regs,
-                                                          const std::vector<size_t>& regs_pool) {
+
+void jit_container_emitter::map_abstract_registers(const std::vector<size_t> &vec_pool,  const std::vector<size_t> &gpr_pool,
+                                                    std::set<size_t>& vecs_used, std::set<size_t>& gprs_used) {
+    if (body.empty())
+        IE_THROW() << "Cannot map registers for jit_container_emitter when its body is empty";
+    auto abstract_to_physical = [](const std::vector<size_t>& abstract_regs, const std::vector<size_t>& regs_pool) {
         std::vector<size_t> physical_regs(abstract_regs.size());
         for (size_t i = 0; i < abstract_regs.size(); i++)
-            physical_regs[i] = regs_pool[abstract_regs[i]];
+            physical_regs[i] = regs_pool.at(abstract_regs[i]);
         return physical_regs;
     };
-    switch (std::dynamic_pointer_cast<jit_emitter>(emitter)->get_in_out_type()) {
-        case gpr_to_gpr:
-//                // Not regs, but utility info, see the emitter for details
-//                in_physical_regs = std::move(in_abstract_regs);
-//                // out_abstract_regs are expected to be empty for now, but may be needed in future
-//                out_physical_regs = std::move(out_abstract_regs);
-//                if (std::dynamic_pointer_cast<TileSchedulerEmitter>(emitter) != nullptr) {
-//                    out_physical_regs.push_back(dnnl::impl::cpu::x64::abi_param1.getIdx());
-//                    out_physical_regs.push_back(dnnl::impl::cpu::x64::abi_param2.getIdx());
-//                } else if (std::dynamic_pointer_cast<TileEmitter>(emitter) != nullptr) {
-//                    // out_abstract_regs are expected to be empty for now, but may be needed in future
-//                    out_physical_regs.push_back(dnnl::impl::cpu::x64::abi_param2.getIdx());
-//                }
-//                remove_regs_from_pool(gp_regs_pool, out_physical_regs);
-            break;
-        case gpr_to_vec:
-            // Load Emmitters
-            in_physical_regs = std::move(abstract_to_physical(in_abstract_regs, gpr));
-            out_physical_regs = std::move(abstract_to_physical(out_abstract_regs, vec));
-            break;
-        case vec_to_gpr:
-            in_physical_regs = std::move(abstract_to_physical(in_abstract_regs, vec));
-            out_physical_regs = std::move(abstract_to_physical(out_abstract_regs, gpr));
-            break;
-        case vec_to_vec:
-            in_physical_regs = std::move(abstract_to_physical(in_abstract_regs, vec));
-            out_physical_regs = std::move(abstract_to_physical(out_abstract_regs, vec));
-            break;
-        default:
-            IE_THROW() << "Unhandled in_out type";
+    for (auto& code : body) {
+        const auto& emitter = code.first;
+        std::vector<size_t> in_abstract_regs, out_abstract_regs;
+        std::tie(in_abstract_regs, out_abstract_regs) = code.second;
+        std::vector<size_t> in_physical_regs, out_physical_regs;
+        switch (std::dynamic_pointer_cast<jit_emitter>(emitter)->get_in_out_type()) {
+            case gpr_to_gpr:
+                // Note that gpr_to_gpr is used for high-level utility operations like Kernel/TileScheduler/Tile.
+                // Input registers are not mapped in this case, since they contain utility info
+                // (num_params, tile increment, etc.), but not reg indexes.
+                in_physical_regs = std::move(in_abstract_regs);
+                out_physical_regs = std::move(abstract_to_physical(out_abstract_regs, gpr_pool));
+                gprs_used.insert(out_physical_regs.begin(), out_physical_regs.end());
+                break;
+            case gpr_to_vec:
+                // Load Emitters
+                in_physical_regs = std::move(abstract_to_physical(in_abstract_regs, gpr_pool));
+                out_physical_regs = std::move(abstract_to_physical(out_abstract_regs, vec_pool));
+                gprs_used.insert(in_physical_regs.begin(), in_physical_regs.end());
+                vecs_used.insert(out_physical_regs.begin(), out_physical_regs.end());
+                break;
+            case vec_to_gpr:
+                // Store Emitters
+                in_physical_regs = std::move(abstract_to_physical(in_abstract_regs, vec_pool));
+                out_physical_regs = std::move(abstract_to_physical(out_abstract_regs, gpr_pool));
+                vecs_used.insert(in_physical_regs.begin(), in_physical_regs.end());
+                gprs_used.insert(out_physical_regs.begin(), out_physical_regs.end());
+                break;
+            case vec_to_vec:
+                // Regular operations
+                in_physical_regs = std::move(abstract_to_physical(in_abstract_regs, vec_pool));
+                out_physical_regs = std::move(abstract_to_physical(out_abstract_regs, vec_pool));
+                vecs_used.insert(in_physical_regs.begin(), in_physical_regs.end());
+                vecs_used.insert(out_physical_regs.begin(), out_physical_regs.end());
+                break;
+            default:
+                IE_THROW() << "Unhandled in_out type";
+        }
+        code.second = std::make_pair(in_physical_regs, out_physical_regs);
+        if (auto container = std::dynamic_pointer_cast<jit_container_emitter>(code.first))
+            container->map_abstract_registers(vec_pool, gpr_pool, vecs_used, gprs_used);
     }
-    return {emitter, {in_physical_regs, out_physical_regs}};
 }
-} // namespace
 
 KernelEmitter::KernelEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
-                             const std::shared_ptr<ov::Node>& n) : jit_emitter(h, isa, n) {
+                             const std::shared_ptr<ov::Node>& n) : jit_container_emitter(h, isa, n) {
     const auto kernel = ov::as_type_ptr<ngraph::snippets::op::Kernel>(n);
     if (!kernel)
         IE_THROW() << "KernelEmitter invoked with invalid op argument";
     body = kernel->region;
+    // Initialize pools of gp and vec registers
+    gp_regs_pool.resize(16);
+    vec_regs_pool.resize(16);
+    std::iota(gp_regs_pool.begin(), gp_regs_pool.end(), 0);
+    std::iota(vec_regs_pool.begin(), vec_regs_pool.end(), 0);
+    auto remove_regs_from_pool = [](std::vector<size_t>& pool, const std::set<size_t>& to_remove) {
+        // It's important to keep the order of other elements
+        pool.erase(std::remove_if(pool.begin(), pool.end(),
+                                       [&](size_t x) {return to_remove.count(x) != 0;}), pool.end());
+    };
+    // Reserve stack base and pointer for push(...) and pop(...) operations
+    // Reserve abi_param1 and abi_param2, since they'll be used to pass runtime call args to kernel
+    remove_regs_from_pool(gp_regs_pool, {Xbyak::Operand::RSP, Xbyak::Operand::RBP,
+                                         static_cast<size_t>(dnnl::impl::cpu::x64::abi_param1.getIdx()),
+                                         static_cast<size_t>(dnnl::impl::cpu::x64::abi_param2.getIdx())});
+    std::set<size_t> vecs_used, gprs_used;
+    map_abstract_registers(vec_regs_pool, gp_regs_pool, vecs_used, gprs_used);
+    remove_regs_from_pool(gp_regs_pool, gprs_used);
+    remove_regs_from_pool(vec_regs_pool, vecs_used);
+    // Remember used gprs to pass it to the TileSchedulerEmitter, so it can init them with appropriate data ptrs
+    gp_regs_used = std::vector<size_t>(gprs_used.begin(), gprs_used.end());
 }
 
 void KernelEmitter::emit_code(const std::vector<size_t> &in,
@@ -101,54 +115,26 @@ void KernelEmitter::validate_arguments(const std::vector<size_t> &in,
                                        const std::vector<size_t> &out,
                                        const std::vector<size_t> &pool,
                                        const std::vector<size_t> &gpr) const {
-        if (in.size() != 1)
-            IE_THROW() << "KernelEmitter got invalid number of inputs. Expected 1, got " << in.size();
-        if (out.size() != 0)
-            IE_THROW() << "KernelEmitter got unexpected output arguments.";
-        if (in[0] > SNIPPETS_MAX_SNIPPETS_DIMS)
-            IE_THROW() << "KernelEmitter supports only up to " << SNIPPETS_MAX_SNIPPETS_DIMS <<
-                       " parameters, got " << in[0];
-//        const int64_t harness_num_dims = jcp.output_dims.size() - 1;
-//        if (harness_num_dims > SNIPPETS_MAX_HARNESS_DIMS)
-//            IE_THROW() << "KernelEmitter supports harness with up to " << SNIPPETS_MAX_HARNESS_DIMS <<
-//                       " dims, got " << harness_num_dims;
+        if (!in.empty())
+            IE_THROW() << "KernelEmitter got invalid number of inputs. Expected 0, got " << in.size();
+        if (!out.empty())
+            IE_THROW() << "KKernelEmitter got invalid number of outputs. Expected 0, got " << out.size();
 }
 
 void KernelEmitter::emit_impl(const std::vector<size_t>& in,
                               const std::vector<size_t>& out,
-                              const std::vector<size_t>& pool,
-                              const std::vector<size_t>& gpr,
+                              const std::vector<size_t>& allocated_vec_regs,
+                              const std::vector<size_t>& allocated_gp_regs,
                               const ov::intel_cpu::emitter_context *emit_context) const {
-    auto num_params = in[0];
-    // Initialize pools of gp and vec registers
-    std::vector<size_t> gp_regs_pool(16);
-    std::iota(gp_regs_pool.begin(), gp_regs_pool.end(), 0);
-    // Reserve stack base and pointer for push(...) and pop(...) operations
-    // Reserve abi_param1 and abi_param2 to process input arguments in TileScheduler
-    remove_regs_from_pool(gp_regs_pool, {Xbyak::Operand::RSP, Xbyak::Operand::RBP,
-                                         static_cast<size_t>(dnnl::impl::cpu::x64::abi_param1.getIdx()),
-                                         static_cast<size_t>(dnnl::impl::cpu::x64::abi_param2.getIdx())});
-
-    std::vector<size_t> data_ptr_regs(num_params);
-    for (int i = 0; i < num_params; i++) {
-        data_ptr_regs[i] = gp_regs_pool[i];
-    }
-    remove_regs_from_pool(gp_regs_pool, data_ptr_regs);
-
-    std::vector<size_t> vec_regs_pool(16);
-    std::iota(vec_regs_pool.begin(), vec_regs_pool.end(), 0);
-
     h->preamble();
     for (const auto& c : body) {
         const auto& emitter = c.first;
-        std::vector<size_t> in_regs;
-        std::vector<size_t> out_regs;
+        std::vector<size_t> in_regs, out_regs;
         std::tie(in_regs, out_regs) = c.second;
-        if (std::dynamic_pointer_cast<TileSchedulerEmitter>(emitter) != nullptr) {
+        if (auto tile_scheduler = std::dynamic_pointer_cast<TileSchedulerEmitter>(emitter)) {
             in_regs.push_back(static_cast<size_t>(dnnl::impl::cpu::x64::abi_param1.getIdx()));
             in_regs.push_back(static_cast<size_t>(dnnl::impl::cpu::x64::abi_param2.getIdx()));
-            for (const auto reg_num : data_ptr_regs)
-                out_regs.push_back(reg_num);
+            out_regs = gp_regs_used;
         }
         emitter->emit_code(in_regs, out_regs, vec_regs_pool, gp_regs_pool);
     }
@@ -156,16 +142,13 @@ void KernelEmitter::emit_impl(const std::vector<size_t>& in,
 }
 
 TileSchedulerEmitter::TileSchedulerEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
-                                           const std::shared_ptr<ov::Node>& n) : jit_emitter(h, isa, n) {
+                                           const std::shared_ptr<ov::Node>& n) : jit_container_emitter(h, isa, n) {
     const auto tile_scheduler = ov::as_type_ptr<ngraph::snippets::op::TileScheduler>(n);
     if (!tile_scheduler)
         IE_THROW() << "TileSchedulerEmitter invoked with invalid op argument";
     if (!tile_scheduler->compile_params)
         IE_THROW() << "TileEmitter invoked without compile_params";
-    vector_tile = tile_scheduler->vector_region;
-    scalar_tile = tile_scheduler->scalar_region;
-    vector_tile_body = std::dynamic_pointer_cast<TileEmitter>(vector_tile.first)->get_body();
-    scalar_tile_body = std::dynamic_pointer_cast<TileEmitter>(scalar_tile.first)->get_body();
+    body = {tile_scheduler->vector_region, tile_scheduler->scalar_region};
     jcp = *reinterpret_cast<const jit_snippets_compile_args*>(tile_scheduler->compile_params);
 }
 void TileSchedulerEmitter::emit_code(const std::vector<size_t> &in,
@@ -183,6 +166,10 @@ void TileSchedulerEmitter::validate_arguments(const std::vector<size_t> &in,
         IE_THROW() << "TileSchedulerEmitter got invalid number of inputs. Expected 5, got " << in.size();
     if (out.size() != in[0] + in[1])
         IE_THROW() << "TileSchedulerEmitter got invalid number of outputs. Expected " << in[0] + in[1] << " , got " << out.size();
+    if (body.size() != 2)
+        IE_THROW() << "TileSchedulerEmitter got invalid body size, expected 2 (vector & scalar TileEmitter), got " << body.size();
+    if (!(std::dynamic_pointer_cast<TileEmitter>(body[0].first) && std::dynamic_pointer_cast<TileEmitter>(body[1].first)))
+        IE_THROW() << "TileSchedulerEmitter can contain only TileEmitters inside its body";
 }
 
 void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
@@ -198,11 +185,18 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
     const size_t inner_work_amount = jcp.scheduler_dims[1];
     const int64_t harness_num_dims = jcp.output_dims.size() - 1;
 
+    const auto& vector_tile = body[0];
+    const auto& scalar_tile = body[1];
+    const auto& vector_tile_body = std::dynamic_pointer_cast<TileEmitter>(vector_tile.first)->get_nested_code();
+    const auto& scalar_tile_body = std::dynamic_pointer_cast<TileEmitter>(scalar_tile.first)->get_nested_code();
+
+    // remove data ptr regs from the pool, since they should be preserved
+    const auto& data_ptr_reg_idxs(out);
+
     // It is critical that reg_outer_amount and reg_inner_amount represent the
     // first two runtime arguments, since they are used to calculating offsets
     Reg64 reg_outer_amount = Reg64(static_cast<int>(in[3]));
     Reg64 reg_inner_amount = Reg64(static_cast<int>(in[4]));
-    std::vector<size_t> gp_regs_pool(gpr_pool);
 
     Label for_body;
 
@@ -219,13 +213,13 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
     };
     std::vector<Reg64> data_ptr_regs(num_params);
     for (auto i = 0; i < num_params; i++) {
-        data_ptr_regs[i] = Reg64(static_cast<int>(out[i]));
+        data_ptr_regs[i] = Reg64(static_cast<int>(data_ptr_reg_idxs[i]));
         if (i < num_inputs)
             h->mov(data_ptr_regs[i], h->ptr[reg_const_params + GET_OFF(src_ptrs) + i * sizeof(void*)]);
         else
             h->mov(data_ptr_regs[i], h->ptr[reg_const_params + GET_OFF(dst_ptrs) + (i - num_inputs) * sizeof(void*)]);
         // we can use the last data_ptr_reg as tmp_reg until the last iteration, and reg_const_params then
-        Reg64 reg_tmp = i < num_params-1 ? Reg64(static_cast<int>(out.back())) : reg_const_params;
+        Reg64 reg_tmp = i < num_params-1 ? Reg64(static_cast<int>(data_ptr_reg_idxs.back())) : reg_const_params;
         init_ptrs_with_offsets(data_ptr_regs[i], &jcp.data_offsets[i * harness_num_dims], reg_tmp);
     }
     auto emit_tiles = [&]() {
@@ -235,10 +229,8 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
                                     bool tile_condition, const EmitterCode& tile) {
             if (body_condition) {
                 // emit Tile body directly if only one tile iteration is needed
-                for (auto& original_code : body) {
-                    auto code = map_regs(original_code, vec_pool, out);
-                    code.first->emit_code(code.second.first, code.second.second, {}, gp_regs_pool);
-                }
+                for (auto& code : body)
+                    code.first->emit_code(code.second.first, code.second.second, vec_pool, gpr_pool);
             } else if (tile_condition) {
                 // Need to set proper work amount for inner tiles before code emission
                 if (!inner_work_amount_is_set) {
@@ -247,12 +239,9 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
                 }
                 std::vector<size_t> in_regs, out_regs;
                 std::tie(in_regs, out_regs) = tile.second;
-                // pass work_amount to Tile
-                in_regs.push_back(static_cast<size_t>(dnnl::impl::cpu::x64::abi_param2.getIdx()));
-                // append data_ptr regs, since Tile will need them to map
-                for (const auto reg : data_ptr_regs)
-                    out_regs.push_back(static_cast<size_t>(reg.getIdx()));
-                tile.first->emit_code(in_regs, out_regs, vec_pool, gp_regs_pool);
+                // pass work_amount reg to Tile
+                in_regs.push_back(static_cast<size_t>(reg_inner_amount.getIdx()));
+                tile.first->emit_code(in_regs, out_regs, vec_pool, gpr_pool);
             }
         };
         process_tile(inner_work_amount == vector_size, vector_tile_body, inner_work_amount > vector_size, vector_tile);
@@ -286,7 +275,7 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
 }
 
 TileEmitter::TileEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
-                         const std::shared_ptr<ov::Node>& n) : jit_emitter(h, isa, n) {
+                         const std::shared_ptr<ov::Node>& n) : jit_container_emitter(h, isa, n) {
     const auto tile = ov::as_type_ptr<ngraph::snippets::op::Tile>(n);
     if (!tile)
         IE_THROW() << "TileEmitter invoked with invalid op argument";
@@ -305,10 +294,10 @@ void TileEmitter::validate_arguments(const std::vector<size_t> &in,
                                      const std::vector<size_t> &out,
                                      const std::vector<size_t> &pool,
                                      const std::vector<size_t> &gpr) const {
-    if (in.size() != 3)
+    if (in.size() != 2)
         IE_THROW() << "TileEmitter got invalid number of inputs. Expected 2, got " << in.size();
-    if (out.size() != in[0])
-        IE_THROW() << "TileEmitter got invalid number of outputs. Expected " << in[0] << " , got " << out.size();
+    if (!out.empty())
+        IE_THROW() << "TileEmitter got invalid number of outputs. Expected 0" << " , got " << out.size();
 }
 
 void TileEmitter::emit_impl(const std::vector<size_t>& in,
@@ -316,27 +305,19 @@ void TileEmitter::emit_impl(const std::vector<size_t>& in,
                             const std::vector<size_t>& vec_pool,
                             const std::vector<size_t>& gpr_pool,
                             const ov::intel_cpu::emitter_context *emit_context) const {
-    const size_t inc = in[1];
-    // Todo: Note that both Tiles use the same reg for amount and this is a problem,
-    //  since we can't just pop it from the pool (we don't know whether it's first/second or the only tile at this point)
-    Reg64 amount = Reg64(static_cast<int>(in[2]));
+    const size_t inc = in[0];
+    Reg64 work_amount = Reg64(static_cast<int>(in[1]));
     Label for_body;
-
-    // If R15 is not used, reserve it for use in scalar to avoid redundant push-pop's.
-    // todo: Do we need explicitly check that code contains ScalarEmitter?
-//    std::vector<size_t> local_gpr = {(size_t) dnnl::impl::cpu::x64::abi_not_param1.getIdx()};
 
     // Note that:
     // * Work amount must be set by TileScheduler that executes Tiles
-    // * TileScheduler execute Tile only if it has to perform >= 1 iterations
+    // * TileScheduler executes Tile only if it has to perform >= 1 iterations
     h->L(for_body);
     {
-        for (auto& original_code : body) {
-            auto code = map_regs(original_code, vec_pool, out);
-            code.first->emit_code(code.second.first, code.second.second, {}, gpr_pool);
-        }
-        h->sub(amount, inc);
-        h->cmp(amount, inc);
+        for (auto& code : body)
+            code.first->emit_code(code.second.first, code.second.second, vec_pool, gpr_pool);
+        h->sub(work_amount, inc);
+        h->cmp(work_amount, inc);
         h->jge(for_body, CodeGenerator::T_NEAR);
     }
 }
