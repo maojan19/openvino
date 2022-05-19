@@ -26,10 +26,13 @@ struct jit_snippets_call_args {
 };
 
 struct jit_snippets_compile_args {
-    int64_t scheduler_dims[SNIPPETS_MAX_TILE_RANK] = {};
+    int64_t scheduler_dims[SNIPPETS_MAX_TILE_RANK] = {}; // covered
     int64_t scheduler_offsets[SNIPPETS_MAX_SNIPPETS_DIMS] = {};
-    int64_t data_offsets[SNIPPETS_MAX_SNIPPETS_DIMS * SNIPPETS_MAX_HARNESS_DIMS] = {};
-    std::vector<size_t> output_dims = {};
+    int64_t data_offsets[SNIPPETS_MAX_SNIPPETS_DIMS * SNIPPETS_MAX_HARNESS_DIMS] = {}; //covered
+    std::vector<size_t> output_dims = {}; // covered
+    size_t harness_num_dims = 0;
+    size_t tileRank = 0;
+    size_t num_dims_to_collapse = 0;
 };
 ///
 /// \brief jit_container_emitter designed to wrap Emitters that contain other Emitters (presently KernelEmitter,
@@ -122,6 +125,9 @@ private:
                    const ov::intel_cpu::emitter_context *emit_context) const override;
 
     jit_snippets_compile_args jcp;
+    std::vector<std::vector<size_t>> input_shapes;
+    std::vector<std::vector<size_t>> output_shapes;
+    std::vector<size_t> exec_domain;
 };
 
 ///

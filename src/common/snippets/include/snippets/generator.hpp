@@ -116,7 +116,9 @@ public:
      * @param m model in canonical for for table-based code generation
      * @return pointer to generated code
      */
-    code generate(std::shared_ptr<ov::Model>& m, const void* compile_params = nullptr) const;
+    code generate(std::shared_ptr<ov::Model>& m,
+                  const std::vector<size_t>& exec_domain,
+                  const void* compile_params = nullptr) const;
 
 protected:
     std::shared_ptr<TargetMachine> target;

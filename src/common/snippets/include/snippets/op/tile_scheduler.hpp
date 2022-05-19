@@ -23,14 +23,20 @@ class TileScheduler : public ngraph::op::Op {
 public:
     OPENVINO_OP("TileScheduler", "SnippetsOpset");
 
-    TileScheduler(const std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo> &vector_region,
-                  const std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo> &scalar_region);
+    TileScheduler(std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo> vector_region,
+                  std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo> scalar_region,
+                  std::vector<std::vector<size_t>> input_shapes,
+                  std::vector<std::vector<size_t>> output_shapes,
+                  std::vector<size_t> exec_domain);
     TileScheduler() = default;
     std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo> vector_region;
     std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo> scalar_region;
+    std::vector<std::vector<size_t>> input_shapes;
+    std::vector<std::vector<size_t>> output_shapes;
+    std::vector<size_t> exec_domain;
     // todo: this clone_with_new_inputs is irrelevant
     std::shared_ptr<Node> clone_with_new_inputs(const OutputVector& inputs) const override {
-        return std::make_shared<TileScheduler>(vector_region, scalar_region);
+        return std::make_shared<TileScheduler>(vector_region, scalar_region, input_shapes, output_shapes, exec_domain);
     }
     const void *compile_params;
 };

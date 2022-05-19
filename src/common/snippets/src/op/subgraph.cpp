@@ -289,7 +289,7 @@ snippets::Schedule snippets::op::Subgraph::generate(ngraph::pass::Manager& opt, 
     // schedule generation should go here and be target agnostic
 
     // actual code emission
-    ngraph::snippets::code ptr = m_generator->generate(m_body, compile_params);
+    ngraph::snippets::code ptr = m_generator->generate(m_body, exec_domain, compile_params);
 
     // check that body doesn't have constants for scheduling
     std::vector<std::shared_ptr<opset1::Constant>> constants;

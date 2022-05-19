@@ -11,6 +11,24 @@ using namespace Xbyak;
 
 namespace ov {
 namespace intel_cpu {
+namespace {
+void collapseLastDims(std::vector<size_t>& dims, size_t dimsToCollapse) {
+    if (dimsToCollapse >= dims.size() - 1)
+        IE_THROW() << "Got invalid number of dims to collapse. Expected < " << dims.size() - 1 << " got " << dimsToCollapse;
+    for (int i = dims.size() - 2; i > dims.size() - dimsToCollapse - 2; i--) {
+        dims[dims.size() - 1] *= dims[i];
+    }
+
+    for (int i = dims.size() - 2; i >= dimsToCollapse; i--) {
+        dims[i] = dims[i - dimsToCollapse];
+    }
+
+    for (int i = dimsToCollapse - 1; i >= 0; i--) {
+        dims[i] = 1;
+    }
+}
+} // namespace
+
 jit_container_emitter::jit_container_emitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
                       const std::shared_ptr<ov::Node>& n) : jit_emitter(h, isa, n) {
     in_out_type_ = emitter_in_out_map::gpr_to_gpr;
@@ -149,7 +167,20 @@ TileSchedulerEmitter::TileSchedulerEmitter(dnnl::impl::cpu::x64::jit_generator* 
     if (!tile_scheduler->compile_params)
         IE_THROW() << "TileEmitter invoked without compile_params";
     body = {tile_scheduler->vector_region, tile_scheduler->scalar_region};
+    exec_domain = tile_scheduler->exec_domain;
+    input_shapes = tile_scheduler->input_shapes;
+    output_shapes = tile_scheduler->output_shapes;
     jcp = *reinterpret_cast<const jit_snippets_compile_args*>(tile_scheduler->compile_params);
+    // todo: can we calculate here ourselves?
+    //  collapse dims should be implemented as optional optimization?
+    if (jcp.num_dims_to_collapse > 0) {
+        for (auto& d : input_shapes)
+            collapseLastDims(d, jcp.num_dims_to_collapse);
+        for (auto& d : output_shapes)
+            collapseLastDims(d, jcp.num_dims_to_collapse);
+        collapseLastDims(exec_domain, jcp.num_dims_to_collapse);
+    }
+    //
 }
 void TileSchedulerEmitter::emit_code(const std::vector<size_t> &in,
                                      const std::vector<size_t> &out,
@@ -181,9 +212,58 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
     const size_t num_outputs = in[1];
     const size_t vector_size = in[2];
     const size_t num_params = num_inputs + num_outputs;
-    const size_t outer_work_amount = jcp.scheduler_dims[0];
-    const size_t inner_work_amount = jcp.scheduler_dims[1];
-    const int64_t harness_num_dims = jcp.output_dims.size() - 1;
+//    const size_t outer_work_amount = jcp.scheduler_dims[0];
+//    const size_t inner_work_amount = jcp.scheduler_dims[1];
+    const size_t outer_work_amount = jcp.tileRank > 0 ? exec_domain[exec_domain.size() - 2] : 1; // sometimes outer WA could be 1 even if exec domain isn't
+    const size_t inner_work_amount = exec_domain.back();
+    const int64_t harness_num_dims = static_cast<int>(exec_domain.size()) - 1;
+    const size_t data_size = sizeof(float);
+    /////////////////////////////////////////////
+    const size_t rank = exec_domain.size();
+    std::vector<std::vector<size_t>> offsets_in(input_shapes.size(), std::vector<size_t>(rank, 1));
+    std::vector<std::vector<size_t>> offsets_out(output_shapes.size(), std::vector<size_t>(rank, 1));
+    auto offset_calculation = [this](std::vector<size_t>& offset, const std::vector<size_t>& dims) {
+        size_t k = 1;
+        for (int i = offset.size() - 1; i >= 0; i--) {
+            offset[i] = (dims[i] == exec_domain[i]) ? k : 0;
+            k *= dims[i];
+        }
+    };
+    // find max rank input among all outputs
+    for (size_t i = 0; i < input_shapes.size(); i++) {
+        offset_calculation(offsets_in[i], input_shapes[i]);
+        for (size_t j = 0; j < rank; j++)
+            offsets_in[i][j] *= data_size;
+    }
+
+    for (size_t i = 0; i < output_shapes.size(); i++) {
+        offset_calculation(offsets_out[i], output_shapes[i]);
+        for (size_t j = 0; j < rank; j++)
+            offsets_out[i][j] *= data_size;
+    }
+    ///////////////////////////////////////////
+    if (jcp.tileRank > 1) {
+        // update offsets for tile 2D because loaders have ptr shifts in some cases and stores have always ptrs shifts
+        for (size_t i = 0; i < offsets_in.size(); i++) {
+            int64_t offset = offsets_in[i][rank - 2];
+            const auto& input_shape = input_shapes[i];
+            // if outer tile is broadcasted then we need to step back
+            bool outer_tile_broadcast = (input_shape[rank - 2] != exec_domain[rank - 2] && input_shape.back() != 1);
+            // if offset is more than 1 element
+            if ((offset > data_size) || outer_tile_broadcast) {
+            if ((offset > dataSize) || (offset == 0 && dims_in[i].back() != 1)) {
+                sch_offsets_in[i] = offset - exec_domain.back() * dataSize;
+            } else if (offset == dataSize) {
+                sch_offsets_in[i] = offset;
+            }
+        }
+
+        for (size_t i = 0; i < offsets_out.size(); i++) {
+            int64_t offset = offsets_out[i][tensorRank - 2];
+            sch_offsets_out[i] = offset - exec_domain.back() * dataSize;
+        }
+    }
+    ////////////
 
     const auto& vector_tile = body[0];
     const auto& scalar_tile = body[1];
@@ -199,7 +279,7 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
     Reg64 reg_const_params = Reg64(static_cast<int>(in[4]));
     auto init_ptrs_with_offsets = [&](Reg64 pointer, const int64_t *offsets, Reg64 reg_tmp) {
         for (int j = 0; j < harness_num_dims; j++) {
-            if (jcp.output_dims[j] != 1 && offsets[j] != 0) {
+            if (exec_domain[j] != 1 && offsets[j] != 0) {
                 h->mov(reg_tmp, offsets[j]);
                 h->imul(reg_tmp, h->ptr[reg_indexes + j * sizeof(size_t)]);
                 h->add(pointer, reg_tmp);
@@ -207,15 +287,19 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
         }
     };
     std::vector<Reg64> data_ptr_regs(num_params);
-    for (auto i = 0; i < num_params; i++) {
-        data_ptr_regs[i] = Reg64(static_cast<int>(data_ptr_reg_idxs[i]));
-        if (i < num_inputs)
-            h->mov(data_ptr_regs[i], h->ptr[reg_const_params + GET_OFF(src_ptrs) + i * sizeof(void*)]);
-        else
-            h->mov(data_ptr_regs[i], h->ptr[reg_const_params + GET_OFF(dst_ptrs) + (i - num_inputs) * sizeof(void*)]);
+    int j = 0;
+    for (; j < num_inputs; j++) {
+        data_ptr_regs[j] = Reg64(static_cast<int>(data_ptr_reg_idxs[j]));
+        h->mov(data_ptr_regs[j], h->ptr[reg_const_params + GET_OFF(src_ptrs) + j * sizeof(void*)]);
+        Reg64 reg_tmp = Reg64(static_cast<int>(data_ptr_reg_idxs.back()));
+        init_ptrs_with_offsets(data_ptr_regs[j], offsets_in[j], reg_tmp);
+    }
+    for (; j < num_params; j++) {
+        data_ptr_regs[j] = Reg64(static_cast<int>(data_ptr_reg_idxs[j]));
+        h->mov(data_ptr_regs[j], h->ptr[reg_const_params + GET_OFF(dst_ptrs) + (j - num_inputs) * sizeof(void*)]);
         // we can use the last data_ptr_reg as tmp_reg until the last iteration, and reg_const_params then
-        Reg64 reg_tmp = i < num_params-1 ? Reg64(static_cast<int>(data_ptr_reg_idxs.back())) : reg_const_params;
-        init_ptrs_with_offsets(data_ptr_regs[i], &jcp.data_offsets[i * harness_num_dims], reg_tmp);
+        Reg64 reg_tmp = j < num_params-1 ? Reg64(static_cast<int>(data_ptr_reg_idxs.back())) : reg_const_params;
+        init_ptrs_with_offsets(data_ptr_regs[j], offsets_in[j], reg_tmp);
     }
 
     // We don't need runtime args, since the data_ptrs are already initialized,
@@ -586,3 +670,4 @@ void ScalarLoadEmitter::emit_isa(const std::vector<size_t> &in, const std::vecto
 }
 }   // namespace intel_cpu
 }   // namespace ov
+
