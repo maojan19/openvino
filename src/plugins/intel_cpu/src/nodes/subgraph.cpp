@@ -357,7 +357,7 @@ void Snippet::define_schedule() {
 
                     break;
                 }
-
+                std::cerr << "Collapsing dimension \n";
                 collapsedDims++;
                 for (auto &d : dims_in)
                     collapseLastDims(d, 1);
@@ -413,11 +413,16 @@ void Snippet::define_schedule() {
 
     initOffsets();
     initSchedulingInfo();
+    std::map<size_t , ov::PartialShape> updated_shapes;
+    for (size_t i = 0; i < dims_in.size(); i++)
+        updated_shapes[i] = ov::PartialShape(dims_in[i]);
+    snippet->get_body()->reshape(updated_shapes);
 }
 
 void Snippet::generate() {
     jit_snippets_compile_args jcp;
     jcp.output_dims = exec_domain;
+    jcp.tileRank = tileRank;
     std::copy(sch_dims.begin(), sch_dims.end(), jcp.scheduler_dims);
     std::copy(sch_offsets_in.begin(), sch_offsets_in.end(), jcp.scheduler_offsets);
     std::copy(sch_offsets_out.begin(), sch_offsets_out.end(), &jcp.scheduler_offsets[sch_offsets_in.size()]);
