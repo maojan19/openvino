@@ -65,6 +65,7 @@ private:
     // Holds index of output used as in execution domain
     // it should be compatible with a schedule's work size
     std::vector<size_t> exec_domain = {};
+    std::vector<size_t> master_shape = {};
 
     /// scheduling info
     size_t batchDimIdx = 0;
@@ -78,16 +79,9 @@ private:
     std::vector<MemoryPtr> dstMemPtrs = {};
 
     std::vector<std::vector<size_t>> dims_in = {};
-    std::vector<std::vector<size_t>> offsets_in = {};
     std::vector<ptrdiff_t> start_offset_in = {};
     std::vector<ptrdiff_t> start_offset_out = {};
 
-    std::vector<std::vector<size_t>> dims_out = {};
-    std::vector<std::vector<size_t>> offsets_out = {};
-
-    std::vector<int64_t> sch_dims = {};
-    std::vector<int64_t> sch_offsets_in = {};
-    std::vector<int64_t> sch_offsets_out = {};
     bool canUseOptimizedImpl = true;
 };
 

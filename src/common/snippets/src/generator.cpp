@@ -52,14 +52,8 @@ ngraph::snippets::code ngraph::snippets::Generator::generate(std::shared_ptr<ov:
         input_shapes.emplace_back(p->get_output_shape(0));
     std::vector<std::vector<size_t>> output_shapes;
     // have to compute updated exec_domain
-    PartialShape outPShape = results[0]->get_shape();
-    for (const auto& r : results) {
-        auto shape_i = r->get_input_shape(0);
-        output_shapes.emplace_back(shape_i);
-        PartialShape::broadcast_merge_into(outPShape, shape_i,
-                                           ::ngraph::op::AutoBroadcastType::NUMPY);
-    }
-    std::vector<size_t> new_exec_domain = outPShape.get_shape();
+    for (const auto& r : results)
+        output_shapes.emplace_back(r->get_input_shape(0));
     auto in = params.size();
     auto out = results.size();
 
@@ -94,7 +88,7 @@ ngraph::snippets::code ngraph::snippets::Generator::generate(std::shared_ptr<ov:
     OV_ITT_TASK_NEXT(GENERATE, "::Tiles2D")
     // wrapping into tiles2D
     auto tile_scheduler = std::make_shared<ngraph::snippets::op::TileScheduler>(vector_region, scalar_region,
-                                                                                                       input_shapes, output_shapes, new_exec_domain);
+                                                                                                       input_shapes, output_shapes, exec_domain);
     tile_scheduler->compile_params = compile_params;
     const auto& tile_scheduler_region = std::make_pair(target->get(ngraph::snippets::op::TileScheduler::get_type_info_static())(tile_scheduler),
                                                        std::make_pair(std::vector<size_t>({in, out, target->get_lanes()}), std::vector<size_t>{}));

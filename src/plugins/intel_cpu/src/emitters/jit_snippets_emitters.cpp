@@ -167,20 +167,10 @@ TileSchedulerEmitter::TileSchedulerEmitter(dnnl::impl::cpu::x64::jit_generator* 
     if (!tile_scheduler->compile_params)
         IE_THROW() << "TileEmitter invoked without compile_params";
     body = {tile_scheduler->vector_region, tile_scheduler->scalar_region};
-    exec_domain = tile_scheduler->exec_domain;
+    master_shape = tile_scheduler->master_shape;
     input_shapes = tile_scheduler->input_shapes;
     output_shapes = tile_scheduler->output_shapes;
     jcp = *reinterpret_cast<const jit_snippets_compile_args*>(tile_scheduler->compile_params);
-    // todo: can we calculate here ourselves?
-    //  collapse dims should be implemented as optional optimization?
-    if (jcp.num_dims_to_collapse > 0) {
-        for (auto& d : input_shapes)
-            collapseLastDims(d, jcp.num_dims_to_collapse);
-        for (auto& d : output_shapes)
-            collapseLastDims(d, jcp.num_dims_to_collapse);
-        collapseLastDims(exec_domain, jcp.num_dims_to_collapse);
-    }
-    //
 }
 void TileSchedulerEmitter::emit_code(const std::vector<size_t> &in,
                                      const std::vector<size_t> &out,
@@ -208,88 +198,38 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
                                      const std::vector<size_t>& vec_pool,
                                      const std::vector<size_t>& gpr_pool,
                                      const ov::intel_cpu::emitter_context *emit_context) const {
-    const size_t num_inputs = in[0];
-    const size_t num_outputs = in[1];
+    const size_t num_inputs = input_shapes.size();
+    const size_t num_outputs = output_shapes.size();
     const size_t vector_size = in[2];
     const size_t num_params = num_inputs + num_outputs;
-    std::cerr << "Scheduler dims: " << jcp.scheduler_dims[0] << ", " << jcp.scheduler_dims[1] << "\n";
-    std::cerr << "Output dims: ";
-    for (auto d : jcp.output_dims)
-        std::cerr << d << ", ";
-    std::cerr << "\n";
-    std::cerr << "Exec domain: ";
-    for (auto d : exec_domain)
-        std::cerr << d << ", ";
-    std::cerr << "\n";
-    std::cerr << "Input_shapes[0]: ";
-    for (auto d : input_shapes[0])
-        std::cerr << d << ", ";
-    std::cerr << "\n";
-    std::cerr << "Output_shapes[0]: ";
-    for (auto d : output_shapes[0])
-        std::cerr << d << ", ";
-    std::cerr << "\n";
-//    const size_t outer_work_amount = jcp.scheduler_dims[0];
-//    const size_t inner_work_amount = jcp.scheduler_dims[1];
-    const size_t outer_work_amount = jcp.tileRank == 1 ? 1 :exec_domain[exec_domain.size() - 2]; // sometimes outer WA could be 1 even if exec domain isn't
-//    const size_t outer_work_amount2 = jcp.tileRank > 1 ? exec_domain[exec_domain.size() - 2] : 1; // sometimes outer WA could be 1 even if exec domain isn't
-//    std::cerr << "outer WA2: " << outer_work_amount2 << "\n";
-    const size_t inner_work_amount = exec_domain.back();
-    const int64_t harness_num_dims = static_cast<int>(exec_domain.size()) - 1;
-//    const int64_t harness_num_dims =  jcp.output_dims.size() - 1;
+    const size_t outer_work_amount = jcp.tileRank == 1 ? 1 :master_shape[master_shape.size() - 2]; // sometimes outer WA could be 1 even if exec domain isn't
+    const size_t inner_work_amount = master_shape.back();
+    const int64_t harness_num_dims = static_cast<int>(master_shape.size()) - 1;
     const size_t data_size = sizeof(float);
-    /////////////////////////////////////////////
-    // todo: reshape subgraph after updating io shapes.
-    // It's not healthy that real shape of the graph doesn't conside with the offset dimensions
-    const size_t rank = exec_domain.size();
-//    const size_t rank = harness_num_dims + 1;
-    std::vector<std::vector<size_t>> offsets_in(input_shapes.size(), std::vector<size_t>(rank, 1));
-    std::vector<std::vector<size_t>> offsets_out(output_shapes.size(), std::vector<size_t>(rank, 1));
+    const size_t rank = master_shape.size();
+    std::vector<std::vector<size_t>> offsets(num_params, std::vector<size_t>(rank, 1));
     auto offset_calculation = [this](std::vector<size_t>& offset, const std::vector<size_t>& dims) {
         size_t k = 1;
         for (int i = offset.size() - 1; i >= 0; i--) {
-            offset[i] = (dims[i] == exec_domain[i]) ? k : 0;
+            offset[i] = (dims[i] == master_shape[i]) ? k : 0;
             k *= dims[i];
         }
     };
     // find max rank input among all outputs
-    for (size_t i = 0; i < input_shapes.size(); i++) {
-        offset_calculation(offsets_in[i], input_shapes[i]);
-        for (size_t j = 0; j < rank; j++)
-            offsets_in[i][j] *= data_size;
+    for (size_t i = 0; i < num_params; i++) {
+        auto& offset = offsets[i];
+        offset_calculation(offset, i < num_inputs ? input_shapes[i] : output_shapes[i - num_inputs]);
+        for (auto &d : offset)
+            d *= data_size;
     }
 
-    for (size_t i = 0; i < output_shapes.size(); i++) {
-        offset_calculation(offsets_out[i], output_shapes[i]);
-        for (size_t j = 0; j < rank; j++)
-            offsets_out[i][j] *= data_size;
-    }
-    std::cerr << "JCP data offsets: \n";
-    for (int j=0; j < SNIPPETS_MAX_HARNESS_DIMS + 4; j++) {
-        const auto& x = jcp.data_offsets[j];
-        std::cerr << x << ", ";
-    }
-    std::cerr << "\n";
-    std::cerr << "Calculates data offsets: \n";
-    for (auto& off : offsets_in) {
-        for (auto& x : off)
-                std::cerr << x << ", ";
-        std::cerr << "\n";
-    }
-    for (auto& off : offsets_out) {
-        for (auto& x : off)
-            std::cerr << x << ", ";
-        std::cerr << "\n";
-    }
-    std::cerr << "\n";
-    ///////////////////////////////////////////
-    std::vector<int64_t> sch_offsets(input_shapes.size() + output_shapes.size(), 0);
+    std::vector<int64_t> sch_offsets(num_params, 0);
     if (jcp.tileRank > 1) {
         // todo: simplify pointer increment logics. Currently some increments are performed by emitters
         //  (not always, but on condition), and some - by TileScheduler.
         // update offsets for tile 2D because loaders have ptr shifts in some cases and stores have always ptrs shifts
-        for (size_t i = 0; i < offsets_in.size(); i++) {
-            int64_t offset = offsets_in[i][rank - 2];
+        for (size_t i = 0; i < num_inputs; i++) {
+            int64_t offset = offsets[i][rank - 2];
             const auto& input_shape = input_shapes[i];
             if (offset > data_size) {
                 sch_offsets[i] = 0;
@@ -298,17 +238,16 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
             } else if (offset == data_size) {
                 sch_offsets[i] = offset;
             // if outer tile is broadcasted then we need to step back to read the same data once again
-            } else if (input_shape[rank - 2] != exec_domain[rank - 2] && input_shape.back() != 1) {
-                sch_offsets[i] = -1 * exec_domain.back() * data_size;
+            } else if (input_shape[rank - 2] != master_shape[rank - 2] && input_shape.back() != 1) {
+                sch_offsets[i] = -1 * master_shape.back() * data_size;
             }
         }
-        // we need to step back for outputs too if output shape is not equal to exec_domain
-        for (size_t i = 0; i < offsets_out.size(); i++) {
-            int64_t offset = offsets_out[i][rank - 2];
-            sch_offsets[i + input_shapes.size()] = offset - exec_domain.back() * data_size;
+        // we need to step back for outputs too if output shape is not equal to master_shape
+        for (size_t i = 0; i < num_outputs; i++) {
+            int64_t offset = offsets[i + num_inputs][rank - 2];
+            sch_offsets[i + num_inputs] = offset - master_shape.back() * data_size;
         }
     }
-    ////////////
 
     const auto& vector_tile = body[0];
     const auto& scalar_tile = body[1];
@@ -323,9 +262,8 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
     Reg64 reg_indexes = Reg64(static_cast<int>(in[3]));
     Reg64 reg_const_params = Reg64(static_cast<int>(in[4]));
     auto init_ptrs_with_offsets = [&](Reg64 pointer, const std::vector<size_t>& offsets, Reg64 reg_tmp) {
-//        auto init_ptrs_with_offsets = [&](Reg64 pointer, const int64_t *offsets, Reg64 reg_tmp) {
         for (int j = 0; j < harness_num_dims; j++) {
-            if (exec_domain[j] != 1 && offsets[j] != 0) {
+            if (master_shape[j] != 1 && offsets[j] != 0) {
                 h->mov(reg_tmp, offsets[j]);
                 h->imul(reg_tmp, h->ptr[reg_indexes + j * sizeof(size_t)]);
                 h->add(pointer, reg_tmp);
@@ -333,21 +271,14 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
         }
     };
     std::vector<Reg64> data_ptr_regs(num_params);
-    for (int j = 0; j < num_inputs; j++) {
+    for (int j = 0; j < num_params; j++) {
         data_ptr_regs[j] = Reg64(static_cast<int>(data_ptr_reg_idxs[j]));
-        h->mov(data_ptr_regs[j], h->ptr[reg_const_params + GET_OFF(src_ptrs) + j * sizeof(void*)]);
-        Reg64 reg_tmp = Reg64(static_cast<int>(data_ptr_reg_idxs.back()));
-//        init_ptrs_with_offsets(data_ptr_regs[j], &jcp.data_offsets[j * SNIPPETS_MAX_HARNESS_DIMS], reg_tmp);
-        init_ptrs_with_offsets(data_ptr_regs[j], offsets_in[j], reg_tmp);
-    }
-    for (int j = 0; j < num_outputs; j++) {
-        const int idx = j + num_inputs;
-        data_ptr_regs[idx] = Reg64(static_cast<int>(data_ptr_reg_idxs[idx]));
-        h->mov(data_ptr_regs[idx], h->ptr[reg_const_params + GET_OFF(dst_ptrs) + j * sizeof(void*)]);
+        // todo: Maybe it's more convenient to pass src & dst pointers in a single array
+        auto ptr_offset = j < num_inputs ? GET_OFF(src_ptrs) : GET_OFF(dst_ptrs) - num_inputs * sizeof(void*);
+        h->mov(data_ptr_regs[j], h->ptr[reg_const_params + ptr_offset + j * sizeof(void*)]);
         // we can use the last data_ptr_reg as tmp_reg until the last iteration, and reg_const_params then
-        Reg64 reg_tmp = j < num_outputs-1 ? Reg64(static_cast<int>(data_ptr_reg_idxs.back())) : reg_const_params;
-//        init_ptrs_with_offsets(data_ptr_regs[idx], &jcp.data_offsets[idx * SNIPPETS_MAX_HARNESS_DIMS], reg_tmp);
-        init_ptrs_with_offsets(data_ptr_regs[idx], offsets_out[j], reg_tmp);
+        Reg64 reg_tmp = j < num_params - 1 ? Reg64(static_cast<int>(data_ptr_reg_idxs.back())) : reg_const_params;
+        init_ptrs_with_offsets(data_ptr_regs[j], offsets[j], reg_tmp);
     }
 
     // We don't need runtime args, since the data_ptrs are already initialized,
@@ -407,11 +338,8 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
             //   after reading/writing. This might be a problem if we need to read the same data multiple times (broadcasting shapes).
             //   To overcome this limitation, we add appropriate negative offsets if necessary.
             for (auto i = 0; i < num_params; i++) {
-//                if (sch_offsets[i] != 0) {
-//                    h->add(data_ptr_regs[i], sch_offsets[i]);
-//                }
-                if (jcp.scheduler_offsets[i] != 0) {
-                    h->add(data_ptr_regs[i], jcp.scheduler_offsets[i]);
+                if (sch_offsets[i] != 0) {
+                    h->add(data_ptr_regs[i], sch_offsets[i]);
                 }
             }
             // Note that outer dimensions are always incremented by 1 (outer tiles are always scalar)

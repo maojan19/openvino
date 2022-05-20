@@ -271,19 +271,15 @@ void Snippet::define_schedule() {
     ngraph::snippets::op::Subgraph::BlockedShapeVector output_blocked_shapes;
     for (size_t i = 0; i < outputShapes.size(); i++)
         output_blocked_shapes.push_back(edgeToBlockedShape(getChildEdgesAtPort(i)[0]));
-    exec_domain = snippet->canonicalize(output_blocked_shapes, input_blocked_shapes);
+    master_shape = snippet->canonicalize(output_blocked_shapes, input_blocked_shapes);
     // initialize by maximum output dimension. Dimensions of outputs should be broadcastable
-    tensorRank = std::max(static_cast<size_t>(rank6D), exec_domain.size());
+    tensorRank = std::max(static_cast<size_t>(rank6D), master_shape.size());
     // Canonicalization broadcasts inputs and outputs to max input rank, which can be smaller than tensorRank
     // prepend to enable 6D scheduler
-    exec_domain = prependWithOnes(exec_domain);
+    exec_domain = prependWithOnes(master_shape);
     const auto &body = snippet->get_body();
     for (const auto& p : body->get_parameters()) {
         dims_in.emplace_back(prependWithOnes(p->get_shape()));
-    }
-
-    for (size_t i = 0; i < body->get_output_size(); i++) {
-        dims_out.push_back(prependWithOnes(body->get_output_shape(i)));
     }
 
     const auto config = getSelectedPrimitiveDescriptor()->getConfig();
@@ -291,15 +287,6 @@ void Snippet::define_schedule() {
     auto initOffsets = [this, config, dataSize]() {
         // find max rank input among all outputs
         const size_t inputNum = getParentEdges().size();
-        offsets_in.resize(inputNum);
-        for (size_t i = 0; i < inputNum; i++) {
-            offsets_in[i].resize(tensorRank, 1);
-            offset_calculation(offsets_in[i], dims_in[i], exec_domain);
-            for (size_t j = 0; j < tensorRank; j++) {
-                offsets_in[i][j] *= dataSize;
-            }
-        }
-
         start_offset_in.resize(inputNum);
         srcMemPtrs.resize(inputNum);
         for (size_t i = 0; i < inputNum; i++) {
@@ -309,15 +296,6 @@ void Snippet::define_schedule() {
         }
 
         const size_t outputNum = config.outConfs.size();
-        offsets_out.resize(outputNum);
-        for (size_t i = 0; i < outputNum; i++) {
-            offsets_out[i].resize(tensorRank, 1);
-            offset_calculation(offsets_out[i], dims_out[i], exec_domain);
-            for (size_t j = 0; j < tensorRank; j++) {
-                offsets_out[i][j] *= dataSize;
-            }
-        }
-
         start_offset_out.resize(outputNum);
         dstMemPtrs.resize(outputNum);
         for (size_t i = 0; i < outputNum; i++) {
@@ -357,49 +335,14 @@ void Snippet::define_schedule() {
 
                     break;
                 }
-                std::cerr << "Collapsing dimension \n";
                 collapsedDims++;
                 for (auto &d : dims_in)
                     collapseLastDims(d, 1);
-
-                for (auto &d : dims_out)
-                    collapseLastDims(d, 1);
-
-                collapseLastDims(exec_domain, 1);
             } else {
                 break;
             }
         }
         return collapsedDims;
-    };
-
-    auto initSchedulingInfo = [this, dataSize]() -> void {
-        // initialize scheduling information
-        sch_offsets_in.resize(offsets_in.size(), 0);
-        sch_offsets_out.resize(offsets_out.size(), 0);
-        sch_dims.resize(maxTileRank, 1);
-        sch_dims[maxTileRank-1] = exec_domain.back();
-        schedulerWorkAmount = fullWorkAmount / exec_domain.back();
-        if (tileRank > 1) {
-            sch_dims[maxTileRank - tileRank] = exec_domain[tensorRank - 2];
-            schedulerWorkAmount /= exec_domain[tensorRank - 2];
-            exec_domain[tensorRank - 2] = 1;
-
-            // update offsets for tile 2D because loaders have ptr shifts in some cases and stores have always ptrs shifts
-            for (size_t i = 0; i < offsets_in.size(); i++) {
-                int64_t offset = offsets_in[i][tensorRank - 2];
-                if ((offset > dataSize) || (offset == 0 && dims_in[i].back() != 1)) {
-                    sch_offsets_in[i] = offset - exec_domain.back() * dataSize;
-                } else if (offset == dataSize) {
-                    sch_offsets_in[i] = offset;
-                }
-            }
-
-            for (size_t i = 0; i < offsets_out.size(); i++) {
-                int64_t offset = offsets_out[i][tensorRank - 2];
-                sch_offsets_out[i] = offset - exec_domain.back() * dataSize;
-            }
-        }
     };
 
     fullWorkAmount = 1;
@@ -412,32 +355,25 @@ void Snippet::define_schedule() {
     find_dims_to_collapse();
 
     initOffsets();
-    initSchedulingInfo();
     std::map<size_t , ov::PartialShape> updated_shapes;
     for (size_t i = 0; i < dims_in.size(); i++)
         updated_shapes[i] = ov::PartialShape(dims_in[i]);
     snippet->get_body()->reshape(updated_shapes);
+    master_shape = snippet->get_master_shape();
+    exec_domain = master_shape;
+    for (int i = 0; i < tileRank; i++) {
+        schedulerWorkAmount = fullWorkAmount / exec_domain[exec_domain.size() - 1 - i];
+        exec_domain[exec_domain.size() - 1 - i] = 1;
+    }
 }
 
 void Snippet::generate() {
     jit_snippets_compile_args jcp;
-    jcp.output_dims = exec_domain;
     jcp.tileRank = tileRank;
-    std::copy(sch_dims.begin(), sch_dims.end(), jcp.scheduler_dims);
-    std::copy(sch_offsets_in.begin(), sch_offsets_in.end(), jcp.scheduler_offsets);
-    std::copy(sch_offsets_out.begin(), sch_offsets_out.end(), &jcp.scheduler_offsets[sch_offsets_in.size()]);
-    size_t harness_num_dims = jcp.output_dims.size() - 1;
+    size_t harness_num_dims = exec_domain.size() - 1;
     if (harness_num_dims > SNIPPETS_MAX_HARNESS_DIMS) {
         canUseOptimizedImpl = false;
         harness_num_dims = SNIPPETS_MAX_HARNESS_DIMS;
-    }
-    for (size_t i = 0; i < inputShapes.size(); i++) {
-        auto b = offsets_in[i].begin();
-        std::copy(b, b + harness_num_dims, &jcp.data_offsets[i * harness_num_dims]);
-    }
-    for (size_t i = 0; i < outputShapes.size(); i++) {
-        auto b = offsets_out[i].begin();
-        std::copy(b, b + harness_num_dims, &jcp.data_offsets[(inputShapes.size() + i) * harness_num_dims]);
     }
     schedule = snippet->generate(reinterpret_cast<void*>(&jcp));
 }

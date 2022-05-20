@@ -213,8 +213,18 @@ Shape snippets::op::Subgraph::canonicalize(const BlockedShapeVector& outputShape
                                                                ::ngraph::op::AutoBroadcastType::NUMPY);
         NODE_VALIDATION_CHECK(this, compatibleWithOtherOutputs, "Snippets output shapes must be numpy broadcastable");
     }
-    exec_domain = outPShape.get_shape();
-    return exec_domain;
+    master_shape = outPShape.get_shape();
+    return master_shape;
+}
+
+Shape snippets::op::Subgraph::get_master_shape() {
+    auto results = m_body->get_results();
+    PartialShape outPShape = results[0]->get_shape();
+    for (const auto& r : results)
+        PartialShape::broadcast_merge_into(outPShape, r->get_input_shape(0),
+                                           ::ngraph::op::AutoBroadcastType::NUMPY);
+    master_shape = outPShape.get_shape();
+    return master_shape;
 }
 
 void snippets::op::Subgraph::convert_to_snippet_dialect() {
@@ -245,7 +255,7 @@ void snippets::op::Subgraph::convert_to_snippet_dialect() {
     //                         Store
     //                        Result
     // Note: Load* should be replaced with ScalarLoad in this example to avoid invalid read in vector Tile.
-    if (!exec_domain.empty() && exec_domain.back() != 1) {
+    if (!master_shape.empty() && master_shape.back() != 1) {
         manager.register_pass<snippets::pass::ReplaceLoadsWithScalarLoads>();
         manager.register_pass<snippets::pass::ReplaceStoresWithScalarStores>();
         manager.get_pass_config()->
@@ -289,7 +299,7 @@ snippets::Schedule snippets::op::Subgraph::generate(ngraph::pass::Manager& opt, 
     // schedule generation should go here and be target agnostic
 
     // actual code emission
-    ngraph::snippets::code ptr = m_generator->generate(m_body, exec_domain, compile_params);
+    ngraph::snippets::code ptr = m_generator->generate(m_body, master_shape, compile_params);
 
     // check that body doesn't have constants for scheduling
     std::vector<std::shared_ptr<opset1::Constant>> constants;
@@ -302,7 +312,7 @@ snippets::Schedule snippets::op::Subgraph::generate(ngraph::pass::Manager& opt, 
     }
     NGRAPH_CHECK(!constants.size(), "External constants detected. Snippet is illigal for scheduling");
 
-    return {exec_domain, false /*canBeLinearized*/, ptr};
+    return {master_shape, false /*canBeLinearized*/, ptr};
 }
 
 void snippets::op::Subgraph::print() const {
