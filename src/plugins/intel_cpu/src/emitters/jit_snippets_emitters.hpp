@@ -26,9 +26,9 @@ struct jit_snippets_call_args {
 };
 
 struct jit_snippets_compile_args {
-    size_t harness_num_dims = 0;
+    int64_t scheduler_offsets[SNIPPETS_MAX_SNIPPETS_DIMS] = {};
+    int64_t data_offsets[SNIPPETS_MAX_SNIPPETS_DIMS * SNIPPETS_MAX_HARNESS_DIMS] = {};
     size_t tileRank = 0;
-    size_t num_dims_to_collapse = 0;
 };
 ///
 /// \brief jit_container_emitter designed to wrap Emitters that contain other Emitters (presently KernelEmitter,

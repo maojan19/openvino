@@ -204,50 +204,7 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
     const size_t num_params = num_inputs + num_outputs;
     const size_t outer_work_amount = jcp.tileRank == 1 ? 1 :master_shape[master_shape.size() - 2]; // sometimes outer WA could be 1 even if exec domain isn't
     const size_t inner_work_amount = master_shape.back();
-    const int64_t harness_num_dims = static_cast<int>(master_shape.size()) - 1;
-    const size_t data_size = sizeof(float);
-    const size_t rank = master_shape.size();
-    std::vector<std::vector<size_t>> offsets(num_params, std::vector<size_t>(rank, 1));
-    auto offset_calculation = [this](std::vector<size_t>& offset, const std::vector<size_t>& dims) {
-        size_t k = 1;
-        for (int i = offset.size() - 1; i >= 0; i--) {
-            offset[i] = (dims[i] == master_shape[i]) ? k : 0;
-            k *= dims[i];
-        }
-    };
-    // find max rank input among all outputs
-    for (size_t i = 0; i < num_params; i++) {
-        auto& offset = offsets[i];
-        offset_calculation(offset, i < num_inputs ? input_shapes[i] : output_shapes[i - num_inputs]);
-        for (auto &d : offset)
-            d *= data_size;
-    }
-
-    std::vector<int64_t> sch_offsets(num_params, 0);
-    if (jcp.tileRank > 1) {
-        // todo: simplify pointer increment logics. Currently some increments are performed by emitters
-        //  (not always, but on condition), and some - by TileScheduler.
-        // update offsets for tile 2D because loaders have ptr shifts in some cases and stores have always ptrs shifts
-        for (size_t i = 0; i < num_inputs; i++) {
-            int64_t offset = offsets[i][rank - 2];
-            const auto& input_shape = input_shapes[i];
-            if (offset > data_size) {
-                sch_offsets[i] = 0;
-            // offset == data_size only if input_shape.back() == 1, but ScalarLoadEmitter doesn't perform increment
-            // in such cases, because it thinks it's broadcasting.
-            } else if (offset == data_size) {
-                sch_offsets[i] = offset;
-            // if outer tile is broadcasted then we need to step back to read the same data once again
-            } else if (input_shape[rank - 2] != master_shape[rank - 2] && input_shape.back() != 1) {
-                sch_offsets[i] = -1 * master_shape.back() * data_size;
-            }
-        }
-        // we need to step back for outputs too if output shape is not equal to master_shape
-        for (size_t i = 0; i < num_outputs; i++) {
-            int64_t offset = offsets[i + num_inputs][rank - 2];
-            sch_offsets[i + num_inputs] = offset - master_shape.back() * data_size;
-        }
-    }
+    const int64_t offsetRank = static_cast<int64_t>(master_shape.size()) - 1;
 
     const auto& vector_tile = body[0];
     const auto& scalar_tile = body[1];
@@ -261,13 +218,15 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
     // first two runtime arguments, since they are used to calculate offsets
     Reg64 reg_indexes = Reg64(static_cast<int>(in[3]));
     Reg64 reg_const_params = Reg64(static_cast<int>(in[4]));
-    auto init_ptrs_with_offsets = [&](Reg64 pointer, const std::vector<size_t>& offsets, Reg64 reg_tmp) {
-        for (int j = 0; j < harness_num_dims; j++) {
-            if (master_shape[j] != 1 && offsets[j] != 0) {
-                h->mov(reg_tmp, offsets[j]);
-                h->imul(reg_tmp, h->ptr[reg_indexes + j * sizeof(size_t)]);
-                h->add(pointer, reg_tmp);
-            }
+    auto init_ptrs_with_offsets = [&](Reg64 pointer, const int64_t* offsets, Reg64 reg_tmp) {
+        // Note that we don't need the last offset, since increment over the last dimension is
+        // performed directly by the Load emitter
+        for (int j = 0; j < offsetRank; j++) {
+                if (master_shape[j] != 1 && offsets[j] != 0) {
+                    h->mov(reg_tmp, offsets[j]);
+                    h->imul(reg_tmp, h->ptr[reg_indexes + j * sizeof(size_t)]);
+                    h->add(pointer, reg_tmp);
+                }
         }
     };
     std::vector<Reg64> data_ptr_regs(num_params);
@@ -278,7 +237,7 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
         h->mov(data_ptr_regs[j], h->ptr[reg_const_params + ptr_offset + j * sizeof(void*)]);
         // we can use the last data_ptr_reg as tmp_reg until the last iteration, and reg_const_params then
         Reg64 reg_tmp = j < num_params - 1 ? Reg64(static_cast<int>(data_ptr_reg_idxs.back())) : reg_const_params;
-        init_ptrs_with_offsets(data_ptr_regs[j], offsets[j], reg_tmp);
+        init_ptrs_with_offsets(data_ptr_regs[j], jcp.data_offsets + j * offsetRank, reg_tmp);
     }
 
     // We don't need runtime args, since the data_ptrs are already initialized,
@@ -338,9 +297,9 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
             //   after reading/writing. This might be a problem if we need to read the same data multiple times (broadcasting shapes).
             //   To overcome this limitation, we add appropriate negative offsets if necessary.
             for (auto i = 0; i < num_params; i++) {
-                if (sch_offsets[i] != 0) {
-                    h->add(data_ptr_regs[i], sch_offsets[i]);
-                }
+                    if (jcp.scheduler_offsets[i] != 0) {
+                        h->add(data_ptr_regs[i], jcp.scheduler_offsets[i]);
+                    }
             }
             // Note that outer dimensions are always incremented by 1 (outer tiles are always scalar)
             h->sub(reg_outer_amount, 1);

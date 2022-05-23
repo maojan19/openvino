@@ -168,17 +168,95 @@ void Snippet::selectOptimalPrimitiveDescriptor() {
     selectPreferPrimitiveDescriptor(getPrimitivesPriority(), true);
 }
 
-void Snippet::createPrimitive() {
-    // schedule definition part
-    // it defines offsets, strides and sizes for snippet kernel scheduling
-    define_schedule();
+void Snippet::calcJITParams(std::vector<size_t>& offsets, std::vector<int64_t>& sch_offsets) {
+    const size_t numInputs = bodyInputShapes.size();
+    const size_t numParams = numInputs + bodyOutputShapes.size();
+    // Note that wen don't need offset for the last dim, since it's handled directly by Load/Store emitters
+    const size_t offset_rank = master_shape.size() - 1;
+    offsets.resize(numParams * (offset_rank), 1);
+    auto offset_calculation = [this, offset_rank](size_t *off, const std::vector<size_t>& dims) {
+        size_t k = dims.back();
+        for (int i = offset_rank - 1; i >= 0; i--) {
+            auto tmp = (dims[i] == master_shape[i]) ? k : 0;
+            off[i] = tmp;
+            k *= dims[i];
+        }
+    };
+    for (size_t i = 0; i < numParams; i++) {
+        offset_calculation(offsets.data() + i * offset_rank, i < numInputs ? bodyInputShapes[i] : bodyOutputShapes[i - numInputs]);
+    }
+    for (auto &d : offsets)
+        d *= dataSize;
 
+    sch_offsets = std::vector<int64_t>(numParams, 0);
+    if (tileRank > 1) {
+        // todo: simplify pointer increment logics. Currently some increments are performed by emitters
+        //  (not always, but on condition), and some - by TileScheduler.
+        // update offsets for tile 2D because loaders have ptr shifts in some cases and stores have always ptrs shifts
+        for (size_t i = 0; i < bodyInputShapes.size(); i++) {
+            // the last offset is ignored, so offsets[offset_rank - 1] is actually outer tile offset
+            int64_t off = offsets[(i + 1) * offset_rank - 1];
+            const auto& input_shape = bodyInputShapes[i];
+            if (off > dataSize) {
+                sch_offsets[i] = 0;
+                // offset == data_size only if input_shape.back() == 1, but ScalarLoadEmitter doesn't perform increment
+                // in such cases, because it thinks it's broadcasting.
+            } else if (off == dataSize) {
+                sch_offsets[i] = off;
+                // if outer tile is broadcasted then we need to step back to read the same data once again
+            } else if (input_shape[master_shape.size() - 2] != master_shape[master_shape.size() - 2] && input_shape.back() != 1) {
+                sch_offsets[i] = -1 * master_shape.back() * dataSize;
+            }
+        }
+        // we need to step back for outputs too if output shape is not equal to master_shape
+        for (size_t i = 0; i < bodyOutputShapes.size(); i++) {
+            int64_t off = offsets[(i + 1 + numInputs) * offset_rank - 1];
+            sch_offsets[i + numInputs] = off - master_shape.back() * dataSize;
+        }
+    }
+}
+
+void Snippet::createPrimitive() {
+    const auto config = getSelectedPrimitiveDescriptor()->getConfig();
+    dataSize = config.inConfs[0].getMemDesc()->getPrecision().size();
+    // determine exec_domain and possibly perform some input_shape-related optimizations:
+    // prepend with ones, collapse dimensions, determine tileRank
+    define_schedule();
+    std::vector<size_t> data_offsets;
+    std::vector<int64_t> scheduler_offsets;
+    calcJITParams(data_offsets, scheduler_offsets);
+    jit_snippets_compile_args jcp;
+    jcp.tileRank = tileRank;
+    std::copy(data_offsets.begin(), data_offsets.end(), jcp.data_offsets);
+    std::copy(scheduler_offsets.begin(), scheduler_offsets.end(), jcp.scheduler_offsets);
     // code generation part
     // it might be worth to generate explicitly for scheduler work amount for now,
     // but in future some interface should be defined in order to communicate schedule for a kernel
     // or generate schedule for a kernel.
     // Here kernel is generated for most warying dimension by default.
-    generate();
+    generate(jcp);
+    auto initStartMemoryOffsets = [this]() {
+        const auto config = getSelectedPrimitiveDescriptor()->getConfig();
+        const size_t numInputs = inputShapes.size();
+        start_offset_in.resize(numInputs);
+        srcMemPtrs.resize(numInputs);
+        for (size_t i = 0; i < numInputs; i++) {
+            const auto memPtr = getParentEdgeAt(i)->getMemoryPtr();
+            srcMemPtrs[i] = memPtr;
+            start_offset_in[i] =  memPtr->GetDescWithType<BlockedMemoryDesc>()->getOffsetPadding() * dataSize;
+        }
+        const size_t numOutputs = outputShapes.size();
+        start_offset_out.resize(numOutputs);
+        dstMemPtrs.resize(numOutputs);
+        for (size_t i = 0; i < numOutputs; i++) {
+            const auto memPtr = getChildEdgeAt(i)->getMemoryPtr();
+            dstMemPtrs[i] = memPtr;
+            start_offset_out[i] = memPtr->GetDescWithType<BlockedMemoryDesc>()->getOffsetPadding() * dataSize;
+        }
+    };
+    // initialize start offsets to src and dst memory
+    // Needs to be done for every set of input shapes sce memory ptrs could've updated
+    initStartMemoryOffsets();
 }
 
 void Snippet::execute(dnnl::stream strm) {
@@ -225,30 +303,6 @@ bool Snippet::canBeInPlace() const {
     return getInputShapeAtPort(0) == getOutputShapeAtPort(0);
 }
 
-static void offset_calculation(std::vector<size_t>& offset, const std::vector<size_t>& dims_in, const std::vector<size_t>& dims_out) {
-    size_t k = 1;
-    for (int i = offset.size() - 1; i >= 0; i--) {
-        offset[i] = (dims_in[i] == dims_out[i]) ? k : 0;
-        k *= dims_in[i];
-    }
-}
-
-static auto collapseLastDims(std::vector<size_t>& dims, size_t dimsToCollapse) -> void {
-    if (dimsToCollapse >= dims.size() - 1)
-        IE_THROW() << "Got invalid number of dims to collapse. Expected < " << dims.size() - 1 << " got " << dimsToCollapse;
-    for (int i = dims.size() - 2; i > dims.size() - dimsToCollapse - 2; i--) {
-        dims[dims.size() - 1] *= dims[i];
-    }
-
-    for (int i = dims.size() - 2; i >= dimsToCollapse; i--) {
-        dims[i] = dims[i - dimsToCollapse];
-    }
-
-    for (int i = dimsToCollapse - 1; i >= 0; i--) {
-        dims[i] = 1;
-    }
-}
-
 void Snippet::define_schedule() {
     auto edgeToBlockedShape = [](const EdgePtr& edge) {
         const auto blockedDesc = edge->getMemory().GetDescWithType<BlockedMemoryDesc>();
@@ -279,33 +333,25 @@ void Snippet::define_schedule() {
     exec_domain = prependWithOnes(master_shape);
     const auto &body = snippet->get_body();
     for (const auto& p : body->get_parameters()) {
-        dims_in.emplace_back(prependWithOnes(p->get_shape()));
+        bodyInputShapes.emplace_back(prependWithOnes(p->get_shape()));
     }
 
-    const auto config = getSelectedPrimitiveDescriptor()->getConfig();
-    const auto dataSize = config.inConfs[0].getMemDesc()->getPrecision().size();
-    auto initOffsets = [this, config, dataSize]() {
-        // find max rank input among all outputs
-        const size_t inputNum = getParentEdges().size();
-        start_offset_in.resize(inputNum);
-        srcMemPtrs.resize(inputNum);
-        for (size_t i = 0; i < inputNum; i++) {
-            const auto memPtr = getParentEdgeAt(i)->getMemoryPtr();
-            srcMemPtrs[i] = memPtr;
-            start_offset_in[i] =  memPtr->GetDescWithType<BlockedMemoryDesc>()->getOffsetPadding() * dataSize;
-        }
+    auto findDimsToCollapse = [this]() -> int {
+        auto collapseLastDims = [](std::vector<size_t>& dims, size_t dimsToCollapse){
+            if (dimsToCollapse >= dims.size() - 1)
+                IE_THROW() << "Got invalid number of dims to collapse. Expected < " << dims.size() - 1 << " got " << dimsToCollapse;
+            for (int i = dims.size() - 2; i > dims.size() - dimsToCollapse - 2; i--) {
+                dims[dims.size() - 1] *= dims[i];
+            }
 
-        const size_t outputNum = config.outConfs.size();
-        start_offset_out.resize(outputNum);
-        dstMemPtrs.resize(outputNum);
-        for (size_t i = 0; i < outputNum; i++) {
-            const auto memPtr = getChildEdgeAt(i)->getMemoryPtr();
-            dstMemPtrs[i] = memPtr;
-            start_offset_out[i] = memPtr->GetDescWithType<BlockedMemoryDesc>()->getOffsetPadding() * dataSize;
-        }
-    };
+            for (int i = dims.size() - 2; i >= dimsToCollapse; i--) {
+                dims[i] = dims[i - dimsToCollapse];
+            }
 
-    auto find_dims_to_collapse = [this, config]() -> int {
+            for (int i = dimsToCollapse - 1; i >= 0; i--) {
+                dims[i] = 1;
+            }
+        };
         int collapsedDims = 0;
         size_t minimalConcurrency = parallel_get_max_threads();
         size_t minimalJitWorkAmount = 256;
@@ -315,9 +361,10 @@ void Snippet::define_schedule() {
                 break;
 
             bool canCollapse = true;
-            for (size_t i = 0; i < dims_in.size(); i++) {
-                if ((dims_in[i][dims_in[i].size() - 2] != 1 && dims_in[i][dims_in[i].size() - 1] == 1) ||
-                    (dims_in[i][dims_in[i].size() - 2] == 1 && dims_in[i][dims_in[i].size() - 1] != 1)) {
+            for (size_t i = 0; i < bodyInputShapes.size(); i++) {
+                const size_t last = bodyInputShapes[i].size() - 1;
+                if ((bodyInputShapes[i][last - 1] != 1 && bodyInputShapes[i][last] == 1) ||
+                    (bodyInputShapes[i][last - 1] == 1 && bodyInputShapes[i][last] != 1)) {
                     canCollapse = false;
                     break;
                 }
@@ -336,7 +383,7 @@ void Snippet::define_schedule() {
                     break;
                 }
                 collapsedDims++;
-                for (auto &d : dims_in)
+                for (auto &d : bodyInputShapes)
                     collapseLastDims(d, 1);
             } else {
                 break;
@@ -345,21 +392,23 @@ void Snippet::define_schedule() {
         return collapsedDims;
     };
 
-    fullWorkAmount = 1;
-    for (const auto &d : exec_domain) {
-        fullWorkAmount *= d;
-    }
+//    fullWorkAmount = 1;
+//    for (const auto &d : exec_domain) {
+//        fullWorkAmount *= d;
+//    }
+    fullWorkAmount = std::accumulate(exec_domain.begin(), exec_domain.end(), 1, std::multiplies<size_t>());
 
     batchDimIdx = tensorRank - exec_domain.size();
     // Note that exec_domain can be modified inside find_dims_to_collapse() and/or initSchedulingInfo()
-    find_dims_to_collapse();
+    findDimsToCollapse();
 
-    initOffsets();
     std::map<size_t , ov::PartialShape> updated_shapes;
-    for (size_t i = 0; i < dims_in.size(); i++)
-        updated_shapes[i] = ov::PartialShape(dims_in[i]);
+    for (size_t i = 0; i < bodyInputShapes.size(); i++)
+        updated_shapes[i] = ov::PartialShape(bodyInputShapes[i]);
     snippet->get_body()->reshape(updated_shapes);
     master_shape = snippet->get_master_shape();
+    for (const auto &r : snippet->get_body()->get_results())
+        bodyOutputShapes.emplace_back(r->get_input_shape(0));
     exec_domain = master_shape;
     for (int i = 0; i < tileRank; i++) {
         schedulerWorkAmount = fullWorkAmount / exec_domain[exec_domain.size() - 1 - i];
@@ -367,15 +416,13 @@ void Snippet::define_schedule() {
     }
 }
 
-void Snippet::generate() {
-    jit_snippets_compile_args jcp;
-    jcp.tileRank = tileRank;
-    size_t harness_num_dims = exec_domain.size() - 1;
+void Snippet::generate(const jit_snippets_compile_args& jcp) {
+    size_t harness_num_dims = exec_domain.size() - tileRank;
     if (harness_num_dims > SNIPPETS_MAX_HARNESS_DIMS) {
         canUseOptimizedImpl = false;
         harness_num_dims = SNIPPETS_MAX_HARNESS_DIMS;
     }
-    schedule = snippet->generate(reinterpret_cast<void*>(&jcp));
+    schedule = snippet->generate(reinterpret_cast<const void*>(&jcp));
 }
 
 void Snippet::schedule_6d(const jit_snippets_call_args& call_args) const {

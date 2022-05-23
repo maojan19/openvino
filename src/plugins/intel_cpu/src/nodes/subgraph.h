@@ -46,8 +46,9 @@ private:
     typedef void (*kernel)(const void *, const void *);
 
     void define_schedule();
+    void calcJITParams(std::vector<size_t>& offsets, std::vector<int64_t>& sch_offsets);
 
-    void generate();
+    void generate(const jit_snippets_compile_args&);
 
     // Evaluates generated snippet using parallel backend
     void schedule_6d(const jit_snippets_call_args& const_args) const;
@@ -77,8 +78,11 @@ private:
 
     std::vector<MemoryPtr> srcMemPtrs = {};
     std::vector<MemoryPtr> dstMemPtrs = {};
+    size_t dataSize = 0;
 
-    std::vector<std::vector<size_t>> dims_in = {};
+    // body Input & output shapes anre optimized and not necessarily the same as inputShapes and outputShapes
+    std::vector<std::vector<size_t>> bodyInputShapes = {};
+    std::vector<std::vector<size_t>> bodyOutputShapes = {};
     std::vector<ptrdiff_t> start_offset_in = {};
     std::vector<ptrdiff_t> start_offset_out = {};
 
