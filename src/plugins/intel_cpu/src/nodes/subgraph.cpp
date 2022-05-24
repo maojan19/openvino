@@ -167,7 +167,6 @@ void Snippet::initSupportedPrimitiveDescriptors() {
 void Snippet::selectOptimalPrimitiveDescriptor() {
     selectPreferPrimitiveDescriptor(getPrimitivesPriority(), true);
 }
-
 void Snippet::calcJITParams(std::vector<size_t>& offsets, std::vector<int64_t>& sch_offsets) {
     const auto& static_master_shape = master_shape.get_shape();
     const size_t numInputs = bodyInputShapes.size();
@@ -217,21 +216,110 @@ void Snippet::calcJITParams(std::vector<size_t>& offsets, std::vector<int64_t>& 
         }
     }
 }
+void Snippet::optimizeExecDomain() {
+    auto findDimsToCollapse = [this](PartialShape &domain, size_t workAmount) {
+        auto collapseLastDims = [](PartialShape& dims, size_t dimsToCollapse) {
+            if (dimsToCollapse >= dims.size() - 1)
+                IE_THROW() << "Got invalid number of dims to collapse. Expected < " << dims.size() - 1 << " got " << dimsToCollapse;
+            for (int i = dims.size() - 2; i > dims.size() - dimsToCollapse - 2; i--) {
+                dims[dims.size() - 1] *= dims[i];
+            }
 
-void Snippet::prepareParams() {
-    const auto config = getSelectedPrimitiveDescriptor()->getConfig();
-    dataSize = config.inConfs[0].getMemDesc()->getPrecision().size();
-    // determine exec_domain and possibly perform some input_shape-related optimizations:
-    // prepend with ones, collapse dimensions, determine tileRank
-    define_schedule();
-    if (!master_shape.is_static())
-        IE_THROW() << "We probably need static master shape by now";
-    std::vector<size_t> data_offsets;
-    std::vector<int64_t> scheduler_offsets;
-    calcJITParams(data_offsets, scheduler_offsets);
-    if (isDynamic) {
-        generate(nullptr);
-    } else {
+            for (int i = dims.size() - 2; i >= dimsToCollapse; i--) {
+                dims[i] = dims[i - dimsToCollapse];
+            }
+
+            for (int i = dimsToCollapse - 1; i >= 0; i--) {
+                dims[i] = 1;
+            }
+        };
+        int collapsedDims = 0;
+        size_t minimalConcurrency = parallel_get_max_threads();
+        size_t minimalJitWorkAmount = 256;
+        size_t currentJitWorkAmount = domain[domain.size() - 1].get_length();
+        while (currentJitWorkAmount < minimalJitWorkAmount && currentJitWorkAmount < workAmount) {
+            if (static_cast<int>(domain.size()) - collapsedDims - 2 < 0)
+                break;
+
+            bool canCollapse = true;
+            for (size_t i = 0; i < bodyInputShapes.size(); i++) {
+                const size_t last = bodyInputShapes[i].size() - 1;
+                if ((bodyInputShapes[i][last - 1] != 1 && bodyInputShapes[i][last] == 1) ||
+                    (bodyInputShapes[i][last - 1] == 1 && bodyInputShapes[i][last] != 1)) {
+                    canCollapse = false;
+                    break;
+                }
+            }
+
+            size_t nextJitWorkAmount = currentJitWorkAmount * domain[domain.size() - 2].get_length();
+            if (workAmount / nextJitWorkAmount >= minimalConcurrency) {
+                currentJitWorkAmount = nextJitWorkAmount;
+                // if we cannot use dim collapsing we should use tile2D
+                if (!canCollapse) {
+                    if (tileRank < maxTileRank) {
+                        tileRank++;
+                        continue;
+                    }
+
+                    break;
+                }
+                collapsedDims++;
+                for (auto &d : bodyInputShapes)
+                    collapseLastDims(d, 1);
+                collapseLastDims(domain, 1);
+            } else {
+                break;
+            }
+        }
+        return domain.get_shape();
+    };
+    const auto& tmpShape = master_shape.get_shape();
+    fullWorkAmount = std::accumulate(tmpShape.begin(), tmpShape.end(), 1, std::multiplies<size_t>());
+    exec_domain = findDimsToCollapse(master_shape, fullWorkAmount);
+}
+void Snippet::normalizeShapes() {
+    auto edgeToBlockedShape = [](const EdgePtr& edge) {
+        const auto blockedDesc = edge->getMemory().GetDescWithType<BlockedMemoryDesc>();
+        ngraph::Shape shape(blockedDesc->getBlockDims());
+        ngraph::AxisVector blocking(blockedDesc->getOrder());
+        ngraph::element::Type precision = InferenceEngine::details::convertPrecision(blockedDesc->getPrecision());
+        return ngraph::snippets::op::Subgraph::BlockedShape{shape, blocking, precision};
+    };
+    auto prependWithOnes = [this](const PartialShape& dims) {
+        if (tensorRank <= dims.size())
+            return dims;
+        std::vector<ov::Dimension> result(tensorRank, 1);
+        std::copy(dims.begin(), dims.end(), &result[tensorRank - dims.size()]);
+        return PartialShape {result};
+    };
+    ngraph::snippets::op::Subgraph::BlockedShapeVector input_blocked_shapes;
+    for (size_t i = 0; i < inputShapes.size(); i++)
+        input_blocked_shapes.push_back(edgeToBlockedShape(getParentEdgesAtPort(i)[0]));
+
+    ngraph::snippets::op::Subgraph::BlockedShapeVector output_blocked_shapes;
+    for (size_t i = 0; i < outputShapes.size(); i++)
+        output_blocked_shapes.push_back(edgeToBlockedShape(getChildEdgesAtPort(i)[0]));
+    master_shape = snippet->canonicalize(output_blocked_shapes, input_blocked_shapes);
+    // initialize by maximum output dimension. Dimensions of outputs should be broadcastable
+    tensorRank = std::max(static_cast<size_t>(rank6D), master_shape.size());
+    // Canonicalization broadcasts inputs and outputs to max input rank, which can be smaller than tensorRank
+    // prepend to enable 6D scheduler
+    master_shape = prependWithOnes(master_shape);
+    const auto &body = snippet->get_body();
+    for (const auto& p : body->get_parameters()) {
+        bodyInputShapes.emplace_back(prependWithOnes(p->get_output_partial_shape(0)));
+    }
+}
+void Snippet::createPrimitive() {
+    // determine canonicalize, determine master_shape and prepend up to 6D
+    // NB! bodyInputShapes are updated, so body reshape might be needed
+    normalizeShapes();
+    if (master_shape.is_static()) {
+        for (int i = 0; i < tileRank; i++) {
+            schedulerWorkAmount = fullWorkAmount / exec_domain[exec_domain.size() - 1 - i];
+            exec_domain[exec_domain.size() - 1 - i] = 1;
+        }
+        prepareParams();
         jit_snippets_compile_args jcp;
         jcp.tileRank = tileRank;
         std::copy(data_offsets.begin(), data_offsets.end(), jcp.data_offsets);
@@ -242,7 +330,26 @@ void Snippet::prepareParams() {
         // or generate schedule for a kernel.
         // Here kernel is generated for most warying dimension by default.
         generate(&jcp);
+    } else {
+        generate(nullptr);
     }
+}
+
+void Snippet::prepareParams() {
+    // here must be all the stuff that could only be done for static shapes, e.g. offset calculation
+    // Here it must be all the stuff that could be done once for both static and dynamic shapes
+    const auto config = getSelectedPrimitiveDescriptor()->getConfig();
+    dataSize = config.inConfs[0].getMemDesc()->getPrecision().size();
+
+    optimizeExecDomain();
+    // todo: do we need this reshape or it's better to pass scheduler_dims as compile-time args?
+    std::map<size_t , ov::PartialShape> updated_shapes;
+    for (size_t i = 0; i < bodyInputShapes.size(); i++)
+        updated_shapes[i] = ov::PartialShape(bodyInputShapes[i]);
+    snippet->get_body()->reshape(updated_shapes);
+    master_shape = snippet->get_master_shape();
+
+    calcJITParams(data_offsets, scheduler_offsets);
     auto initStartMemoryOffsets = [this]() {
         const auto config = getSelectedPrimitiveDescriptor()->getConfig();
         const size_t numInputs = inputShapes.size();
@@ -265,6 +372,10 @@ void Snippet::prepareParams() {
     // initialize start offsets to src and dst memory
     // Needs to be done for every set of input shapes sce memory ptrs could've updated
     initStartMemoryOffsets();
+    for (int i = 0; i < tileRank; i++) {
+        schedulerWorkAmount = fullWorkAmount / exec_domain[exec_domain.size() - 1 - i];
+        exec_domain[exec_domain.size() - 1 - i] = 1;
+    }
 }
 
 bool Snippet::needPrepareParams() const {
@@ -287,6 +398,10 @@ void Snippet::execute(dnnl::stream strm) {
     } else {
         schedule_nt(call_args);
     }
+}
+
+void Snippet::executeDynamicImpl(dnnl::stream strm) {
+    execute(strm);
 }
 
 bool Snippet::created() const {
@@ -315,48 +430,41 @@ bool Snippet::canBeInPlace() const {
     return getInputShapeAtPort(0) == getOutputShapeAtPort(0);
 }
 
-void Snippet::define_schedule() {
-    auto edgeToBlockedShape = [](const EdgePtr& edge) {
-        const auto blockedDesc = edge->getMemory().GetDescWithType<BlockedMemoryDesc>();
-        ngraph::Shape shape(blockedDesc->getBlockDims());
-        ngraph::AxisVector blocking(blockedDesc->getOrder());
-        ngraph::element::Type precision = InferenceEngine::details::convertPrecision(blockedDesc->getPrecision());
-        return ngraph::snippets::op::Subgraph::BlockedShape{shape, blocking, precision};
-    };
-//    auto prependWithOnes = [this](const std::vector<size_t>& dims) {
+//void Snippet::define_schedule() {
+//    auto edgeToBlockedShape = [](const EdgePtr& edge) {
+//        const auto blockedDesc = edge->getMemory().GetDescWithType<BlockedMemoryDesc>();
+//        ngraph::Shape shape(blockedDesc->getBlockDims());
+//        ngraph::AxisVector blocking(blockedDesc->getOrder());
+//        ngraph::element::Type precision = InferenceEngine::details::convertPrecision(blockedDesc->getPrecision());
+//        return ngraph::snippets::op::Subgraph::BlockedShape{shape, blocking, precision};
+//    };
+//    auto prependWithOnes = [this](const PartialShape& dims) {
 //        if (tensorRank <= dims.size())
 //            return dims;
-//        VectorDims result(tensorRank, 1);
+//        std::vector<ov::Dimension> result(tensorRank, 1);
 //        std::copy(dims.begin(), dims.end(), &result[tensorRank - dims.size()]);
-//        return result;
+//        return PartialShape {result};
 //    };
-    auto prependWithOnes = [this](const PartialShape& dims) {
-        if (tensorRank <= dims.size())
-            return dims;
-        std::vector<ov::Dimension> result(tensorRank, 1);
-        std::copy(dims.begin(), dims.end(), &result[tensorRank - dims.size()]);
-        return PartialShape {result};
-    };
-    ngraph::snippets::op::Subgraph::BlockedShapeVector input_blocked_shapes;
-    for (size_t i = 0; i < inputShapes.size(); i++)
-        input_blocked_shapes.push_back(edgeToBlockedShape(getParentEdgesAtPort(i)[0]));
-
-    ngraph::snippets::op::Subgraph::BlockedShapeVector output_blocked_shapes;
-    for (size_t i = 0; i < outputShapes.size(); i++)
-        output_blocked_shapes.push_back(edgeToBlockedShape(getChildEdgesAtPort(i)[0]));
-    master_shape = snippet->canonicalize(output_blocked_shapes, input_blocked_shapes);
-    // initialize by maximum output dimension. Dimensions of outputs should be broadcastable
-    tensorRank = std::max(static_cast<size_t>(rank6D), master_shape.size());
-    // Canonicalization broadcasts inputs and outputs to max input rank, which can be smaller than tensorRank
-    // prepend to enable 6D scheduler
-    master_shape = prependWithOnes(master_shape);
-    const auto &body = snippet->get_body();
-    for (const auto& p : body->get_parameters()) {
-        bodyInputShapes.emplace_back(prependWithOnes(p->get_shape()));
-    }
-
-    auto findDimsToCollapse = [this]() -> int {
-//        auto collapseLastDims = [](std::vector<size_t>& dims, size_t dimsToCollapse){
+//    ngraph::snippets::op::Subgraph::BlockedShapeVector input_blocked_shapes;
+//    for (size_t i = 0; i < inputShapes.size(); i++)
+//        input_blocked_shapes.push_back(edgeToBlockedShape(getParentEdgesAtPort(i)[0]));
+//
+//    ngraph::snippets::op::Subgraph::BlockedShapeVector output_blocked_shapes;
+//    for (size_t i = 0; i < outputShapes.size(); i++)
+//        output_blocked_shapes.push_back(edgeToBlockedShape(getChildEdgesAtPort(i)[0]));
+//    master_shape = snippet->canonicalize(output_blocked_shapes, input_blocked_shapes);
+//    // initialize by maximum output dimension. Dimensions of outputs should be broadcastable
+//    tensorRank = std::max(static_cast<size_t>(rank6D), master_shape.size());
+//    // Canonicalization broadcasts inputs and outputs to max input rank, which can be smaller than tensorRank
+//    // prepend to enable 6D scheduler
+//    master_shape = prependWithOnes(master_shape);
+//    const auto &body = snippet->get_body();
+//    for (const auto& p : body->get_parameters()) {
+//        bodyInputShapes.emplace_back(prependWithOnes(p->get_shape()));
+//    }
+//
+//    auto findDimsToCollapse = [this]() -> int {
+//        auto collapseLastDims = [](PartialShape& dims, size_t dimsToCollapse) {
 //            if (dimsToCollapse >= dims.size() - 1)
 //                IE_THROW() << "Got invalid number of dims to collapse. Expected < " << dims.size() - 1 << " got " << dimsToCollapse;
 //            for (int i = dims.size() - 2; i > dims.size() - dimsToCollapse - 2; i--) {
@@ -371,87 +479,71 @@ void Snippet::define_schedule() {
 //                dims[i] = 1;
 //            }
 //        };
-        auto collapseLastDims = [](PartialShape& dims, size_t dimsToCollapse) {
-            if (dimsToCollapse >= dims.size() - 1)
-                IE_THROW() << "Got invalid number of dims to collapse. Expected < " << dims.size() - 1 << " got " << dimsToCollapse;
-            for (int i = dims.size() - 2; i > dims.size() - dimsToCollapse - 2; i--) {
-                dims[dims.size() - 1] *= dims[i];
-            }
-
-            for (int i = dims.size() - 2; i >= dimsToCollapse; i--) {
-                dims[i] = dims[i - dimsToCollapse];
-            }
-
-            for (int i = dimsToCollapse - 1; i >= 0; i--) {
-                dims[i] = 1;
-            }
-        };
-        int collapsedDims = 0;
-        size_t minimalConcurrency = parallel_get_max_threads();
-        size_t minimalJitWorkAmount = 256;
-        // If one of the last two dims is dynamic then skip collapsing and pack it to dynamic Tile
-        if (!master_shape[tensorRank - 1].is_static() || !master_shape[tensorRank - 2].is_static()) {
-            tileRank++;
-            return 0;
-        }
-        size_t currentJitWorkAmount = master_shape[tensorRank - 1].get_length();
-        while (currentJitWorkAmount < minimalJitWorkAmount && currentJitWorkAmount < fullWorkAmount) {
-            if (static_cast<int>(master_shape.size()) - collapsedDims - 2 < 0)
-                break;
-
-            bool canCollapse = true;
-            for (size_t i = 0; i < bodyInputShapes.size(); i++) {
-                const size_t last = bodyInputShapes[i].size() - 1;
-                if ((bodyInputShapes[i][last - 1] != 1 && bodyInputShapes[i][last] == 1) ||
-                    (bodyInputShapes[i][last - 1] == 1 && bodyInputShapes[i][last] != 1)) {
-                    canCollapse = false;
-                    break;
-                }
-            }
-
-            size_t nextJitWorkAmount = currentJitWorkAmount * master_shape[master_shape.size() - 2].get_length();
-            if (fullWorkAmount / nextJitWorkAmount >= minimalConcurrency) {
-                currentJitWorkAmount = nextJitWorkAmount;
-                // if we cannot use dim collapsing we should use tile2D
-                if (!canCollapse) {
-                    if (tileRank < maxTileRank) {
-                        tileRank++;
-                        continue;
-                    }
-
-                    break;
-                }
-                collapsedDims++;
-                for (auto &d : bodyInputShapes)
-                    collapseLastDims(d, 1);
-                collapseLastDims(master_shape, 1);
-            } else {
-                break;
-            }
-        }
-        return collapsedDims;
-    };
-    batchDimIdx = tensorRank - exec_domain.size();
-    // Note that exec_domain can be modified inside find_dims_to_collapse() and/or initSchedulingInfo()
-    findDimsToCollapse();
-
-    std::map<size_t , ov::PartialShape> updated_shapes;
-    for (size_t i = 0; i < bodyInputShapes.size(); i++)
-        updated_shapes[i] = ov::PartialShape(bodyInputShapes[i]);
-    snippet->get_body()->reshape(updated_shapes);
-    master_shape = snippet->get_master_shape();
-    for (const auto &r : snippet->get_body()->get_results())
-        bodyOutputShapes.emplace_back(r->get_input_shape(0));
-    // we need fullWorkAmount only
-    if (master_shape.is_static()) {
-        exec_domain = master_shape.get_shape();
-        fullWorkAmount = std::accumulate(exec_domain.begin(), exec_domain.end(), 1, std::multiplies<size_t>());
-        for (int i = 0; i < tileRank; i++) {
-            schedulerWorkAmount = fullWorkAmount / exec_domain[exec_domain.size() - 1 - i];
-            exec_domain[exec_domain.size() - 1 - i] = 1;
-        }
-    }
-}
+//        int collapsedDims = 0;
+//        size_t minimalConcurrency = parallel_get_max_threads();
+//        size_t minimalJitWorkAmount = 256;
+//        // If one of the last two dims is dynamic then skip collapsing and pack it to dynamic Tile
+//        if (!master_shape[tensorRank - 1].is_static() || !master_shape[tensorRank - 2].is_static()) {
+//            tileRank++;
+//            return 0;
+//        }
+//        size_t currentJitWorkAmount = master_shape[tensorRank - 1].get_length();
+//        while (currentJitWorkAmount < minimalJitWorkAmount && currentJitWorkAmount < fullWorkAmount) {
+//            if (static_cast<int>(master_shape.size()) - collapsedDims - 2 < 0)
+//                break;
+//
+//            bool canCollapse = true;
+//            for (size_t i = 0; i < bodyInputShapes.size(); i++) {
+//                const size_t last = bodyInputShapes[i].size() - 1;
+//                if ((bodyInputShapes[i][last - 1] != 1 && bodyInputShapes[i][last] == 1) ||
+//                    (bodyInputShapes[i][last - 1] == 1 && bodyInputShapes[i][last] != 1)) {
+//                    canCollapse = false;
+//                    break;
+//                }
+//            }
+//
+//            size_t nextJitWorkAmount = currentJitWorkAmount * master_shape[master_shape.size() - 2].get_length();
+//            if (fullWorkAmount / nextJitWorkAmount >= minimalConcurrency) {
+//                currentJitWorkAmount = nextJitWorkAmount;
+//                // if we cannot use dim collapsing we should use tile2D
+//                if (!canCollapse) {
+//                    if (tileRank < maxTileRank) {
+//                        tileRank++;
+//                        continue;
+//                    }
+//
+//                    break;
+//                }
+//                collapsedDims++;
+//                for (auto &d : bodyInputShapes)
+//                    collapseLastDims(d, 1);
+//                collapseLastDims(master_shape, 1);
+//            } else {
+//                break;
+//            }
+//        }
+//        return collapsedDims;
+//    };
+//    batchDimIdx = tensorRank - exec_domain.size();
+//    findDimsToCollapse();
+//
+//    std::map<size_t , ov::PartialShape> updated_shapes;
+//    for (size_t i = 0; i < bodyInputShapes.size(); i++)
+//        updated_shapes[i] = ov::PartialShape(bodyInputShapes[i]);
+//    snippet->get_body()->reshape(updated_shapes);
+//    master_shape = snippet->get_master_shape();
+//    for (const auto &r : snippet->get_body()->get_results())
+//        bodyOutputShapes.emplace_back(r->get_input_shape(0));
+//    // we need fullWorkAmount only in the static case
+//    if (master_shape.is_static()) {
+//        exec_domain = master_shape.get_shape();
+//        fullWorkAmount = std::accumulate(exec_domain.begin(), exec_domain.end(), 1, std::multiplies<size_t>());
+//        for (int i = 0; i < tileRank; i++) {
+//            schedulerWorkAmount = fullWorkAmount / exec_domain[exec_domain.size() - 1 - i];
+//            exec_domain[exec_domain.size() - 1 - i] = 1;
+//        }
+//    }
+//}
 
 void Snippet::generate(const jit_snippets_compile_args* jcp) {
     size_t harness_num_dims = exec_domain.size() - tileRank;

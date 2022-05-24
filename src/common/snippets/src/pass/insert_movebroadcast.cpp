@@ -140,6 +140,8 @@ ngraph::snippets::pass::InsertMoveBroadcast::InsertMoveBroadcast() {
     ngraph::graph_rewrite_callback callback = [this](ngraph::pattern::Matcher &m) {
         OV_ITT_SCOPED_TASK(ngraph::pass::itt::domains::SnippetsTransform, "Snippets::op::InsertMoveBroadcast")
         auto root = m.get_match_root();
+        if (transformation_callback(root))
+            return false;
         const auto& values = root->input_values();
         if (values.empty()) {
             return false;

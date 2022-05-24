@@ -32,6 +32,7 @@ public:
     void selectOptimalPrimitiveDescriptor() override;
 
     // Here we convert to canonical for & jit everything
+    void createPrimitive() override;
     void prepareParams() override;
     bool needPrepareParams() const override;
 
@@ -40,13 +41,16 @@ public:
 
     // if generator is set, it would execute generated code otherwise it would fallback to nGraph reference
     void execute(dnnl::stream strm) override;
+    void executeDynamicImpl(dnnl::stream strm) override;
 
 private:
     static const size_t rank6D {6};
 
     typedef void (*kernel)(const void *, const void *);
 
-    void define_schedule();
+//    void define_schedule();
+    void normalizeShapes();
+    void optimizeExecDomain();
     void calcJITParams(std::vector<size_t>& offsets, std::vector<int64_t>& sch_offsets);
 
     void generate(const jit_snippets_compile_args*);
@@ -82,6 +86,9 @@ private:
     std::vector<MemoryPtr> srcMemPtrs = {};
     std::vector<MemoryPtr> dstMemPtrs = {};
     size_t dataSize = 0;
+
+    std::vector<size_t> data_offsets;
+    std::vector<int64_t> scheduler_offsets;
 
     // body Input & output shapes anre optimized and not necessarily the same as inputShapes and outputShapes
 //    std::vector<std::vector<size_t>> bodyInputShapes = {};

@@ -168,8 +168,8 @@ TileSchedulerEmitter::TileSchedulerEmitter(dnnl::impl::cpu::x64::jit_generator* 
         IE_THROW() << "TileEmitter invoked without compile_params";
     body = {tile_scheduler->vector_region, tile_scheduler->scalar_region};
     master_shape = tile_scheduler->master_shape;
-    input_shapes = tile_scheduler->input_shapes;
-    output_shapes = tile_scheduler->output_shapes;
+//    input_shapes = tile_scheduler->input_shapes;
+//    output_shapes = tile_scheduler->output_shapes;
     jcp = *reinterpret_cast<const jit_snippets_compile_args*>(tile_scheduler->compile_params);
 }
 void TileSchedulerEmitter::emit_code(const std::vector<size_t> &in,
@@ -198,8 +198,8 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
                                      const std::vector<size_t>& vec_pool,
                                      const std::vector<size_t>& gpr_pool,
                                      const ov::intel_cpu::emitter_context *emit_context) const {
-    const size_t num_inputs = input_shapes.size();
-    const size_t num_outputs = output_shapes.size();
+    const size_t num_inputs = in[0];
+    const size_t num_outputs = in[1];
     const size_t vector_size = in[2];
     const size_t num_params = num_inputs + num_outputs;
     const size_t outer_work_amount = jcp.tileRank == 1 ? 1 :master_shape[master_shape.size() - 2]; // sometimes outer WA could be 1 even if exec domain isn't
@@ -501,7 +501,9 @@ void ScalarStoreEmitter::emit_isa(const std::vector<size_t> &in, const std::vect
 
 LoadEmitter::LoadEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
                          const std::shared_ptr<ov::Node>& n)
-                         : MemoryEmitter(h, isa, n), shouldPostIncrement(*n->get_input_shape(0).rbegin() != 1) {
+                         : MemoryEmitter(h, isa, n) { //shouldPostIncrement(*n->get_input_shape(0).rbegin() != 1)
+    const auto& last_dim = *(n->get_input_partial_shape(0).rbegin());
+    shouldPostIncrement = last_dim.is_static() && last_dim.get_length() != 1;
     in_out_type_ = emitter_in_out_map::gpr_to_vec;
 }
 
@@ -572,7 +574,9 @@ void BroadcastLoadEmitter::emit_isa(const std::vector<size_t> &in, const std::ve
 
 ScalarLoadEmitter::ScalarLoadEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
                                      const std::shared_ptr<ov::Node>& n)
-                                    : MemoryEmitter(h, isa, n), shouldPostIncrement(*n->get_input_shape(0).rbegin() != 1) {
+                                    : MemoryEmitter(h, isa, n) { // shouldPostIncrement(*n->get_input_shape(0).rbegin() != 1)
+    const auto& last_dim = *(n->get_input_partial_shape(0).rbegin());
+    shouldPostIncrement = last_dim.is_static() && last_dim.get_length() != 1;
     in_out_type_ = emitter_in_out_map::gpr_to_vec;
 }
 

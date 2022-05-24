@@ -239,7 +239,12 @@ void snippets::op::Subgraph::convert_to_snippet_dialect() {
     INTERNAL_OP_SCOPE(Subgraph);
     OV_ITT_SCOPED_TASK(ngraph::pass::itt::domains::SnippetsTransform, "Snippets::convert_to_snippet_dialect")
     auto skip_matching_domain = [](const std::shared_ptr<const ov::Node>& n) -> bool {
-        return n->get_input_shape(0).back() != 1;
+        const auto& pshape = n->get_input_partial_shape(0);
+        const auto& last_dim = pshape[pshape.size() - 1];
+        return last_dim.is_dynamic() || last_dim.get_length() != 1;
+    };
+    auto skip_dynamic_node = [](const std::shared_ptr<const ov::Node>& n) -> bool {
+        return n->get_input_partial_shape(0).is_dynamic();
     };
     ngraph::pass::Manager manager;
     manager.register_pass<snippets::pass::ConvertConstantsToScalars>();
@@ -248,6 +253,11 @@ void snippets::op::Subgraph::convert_to_snippet_dialect() {
     manager.register_pass<snippets::pass::InsertStore>();
     manager.register_pass<snippets::pass::InsertMoveBroadcast>();
     manager.register_pass<snippets::pass::LoadMoveBroadcastToBroadcastLoad>();
+    // todo: figure out how to broadcast for dynamic shapes
+    if (master_shape.is_dynamic()) {
+        manager.get_pass_config()->
+            set_callback<ngraph::snippets::pass::InsertMoveBroadcast>(skip_dynamic_node);
+    }
     // Note that, BrodacastMove is typically inserted right after the Load. Such cases are typical for
     // simple subgraphs where one of the ngraph::op's inputs is broadcasted to match the larger one. However, BroadcastMove
     // could also be inserted after the ngraph::op, if the op input don't need broadcasting, but the the output does
