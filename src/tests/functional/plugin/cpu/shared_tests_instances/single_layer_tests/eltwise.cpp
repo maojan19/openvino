@@ -43,8 +43,8 @@ std::vector<std::vector<ov::test::InputShape>> inShapesDynamic = {
 
 std::vector<ov::test::ElementType> netPrecisions = {
         ov::element::f32,
-        ov::element::f16,
-        ov::element::i32,
+//        ov::element::f16,
+//        ov::element::i32,
 };
 
 std::vector<ngraph::helpers::InputLayerType> secondaryInputTypes = {
@@ -78,8 +78,8 @@ std::vector<ngraph::helpers::EltwiseTypes> eltwiseOpTypes = {
 
 std::vector<ngraph::helpers::EltwiseTypes> eltwiseOpTypesDynamic = {
         ngraph::helpers::EltwiseTypes::ADD,
-        ngraph::helpers::EltwiseTypes::MULTIPLY,
-        ngraph::helpers::EltwiseTypes::SUBTRACT,
+//        ngraph::helpers::EltwiseTypes::MULTIPLY,
+//        ngraph::helpers::EltwiseTypes::SUBTRACT,
 };
 
 ov::test::Config additional_config = {};
