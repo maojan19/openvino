@@ -83,7 +83,7 @@ public:
      * @param f can this kernel be linearided to 1D range
      * @param p pointer to generated code
      */
-    Schedule(const Shape& ws, bool f, code p) : work_size(ws), is_flat(f), ptr(p) {}
+    Schedule(ov::PartialShape ws, bool f, code p) : work_size(std::move(ws)), is_flat(f), ptr(p) {}
     /**
      * @brief Returns callable instanse of code pointer
      */
@@ -91,7 +91,7 @@ public:
         return reinterpret_cast<K>(const_cast<unsigned char*>(ptr));
     }
 
-    Shape work_size {};
+    ov::PartialShape work_size {};
     bool is_flat {false};
     code ptr {nullptr};
 };
@@ -117,7 +117,7 @@ public:
      * @return pointer to generated code
      */
     code generate(std::shared_ptr<ov::Model>& m,
-                  const std::vector<size_t>& exec_domain,
+                  const ov::PartialShape& master_shape,
                   const void* compile_params = nullptr) const;
 
 protected:

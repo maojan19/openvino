@@ -119,8 +119,9 @@ auto has_supported_in_out(const std::shared_ptr<const Node> &n) -> bool {
             }
         }
     }
-    return std::all_of(inputs.begin(), inputs.end(), [&](const Input<const Node>& in) {return  supported(in.get_tensor());}) &&
-           std::all_of(outputs.begin(), outputs.end(), [&](const Output<const Node>& out) {return  supported(out.get_tensor());});
+//    return std::all_of(inputs.begin(), inputs.end(), [&](const Input<const Node>& in) {return  supported(in.get_tensor());}) &&
+//           std::all_of(outputs.begin(), outputs.end(), [&](const Output<const Node>& out) {return  supported(out.get_tensor());});
+    return true;
 }
 
 auto has_result_child(const std::shared_ptr<const Node> &node) -> bool {

@@ -125,7 +125,7 @@ auto snippets::op::Subgraph::wrap_node_as_subgraph(const std::shared_ptr<ov::Nod
 ///         Canonicalization currently supports only the following layout conversions:
 ///             * None: all inputs have the same layout
 ///             * Planar + blocked: some inputs have blocked, and some have planar layouts, e.g. <N, C, H, W, c> + <N, C, H, W>
-Shape snippets::op::Subgraph::canonicalize(const BlockedShapeVector& outputShapes, const BlockedShapeVector& inputShapes) {
+PartialShape snippets::op::Subgraph::canonicalize(const BlockedShapeVector& outputShapes, const BlockedShapeVector& inputShapes) {
     INTERNAL_OP_SCOPE(Subgraph);
     OV_ITT_SCOPED_TASK(ngraph::pass::itt::domains::SnippetsTransform, "Snippets::canonicalize")
     NODE_VALIDATION_CHECK(this, inputShapes.size() == m_body->get_parameters().size(),
@@ -175,29 +175,34 @@ Shape snippets::op::Subgraph::canonicalize(const BlockedShapeVector& outputShape
         NODE_VALIDATION_CHECK(this,
                               PartialShape::broadcast_merge_into(tmpPShape, inShape, ::ngraph::op::AutoBroadcastType::NUMPY),
                               "Failed to create broadcastable shapes in snippets canonicalization");
-        const auto paramShape = m_body->get_parameters()[i]->get_shape();
+//        const auto paramShape = m_body->get_parameters()[i]->get_shape();
+        const auto paramShape = m_body->get_parameters()[i]->get_partial_shape();
         if (paramShape.size() != inShape.size() || !equal(paramShape.begin(), paramShape.end(), inShape.begin()))
                 m_body->replace_parameter(i, std::make_shared<opset1::Parameter>(inType, inShape));
     }
 
     m_body->validate_nodes_and_infer_types();
-    auto skipStartEndOnes = [](const Shape& shape) {
+//    auto skipStartEndOnes = [](const Shape& shape) {
+        auto skipStartEndOnes = [](const PartialShape& shape) {
         auto begin = shape.begin();
         auto end = shape.end();
         while (begin != end && *begin == 1)
             begin++;
         while (begin != end && *(end-1) == 1)
             end--;
-        Shape trimmedShape(end - begin, 1);
+
+        PartialShape trimmedShape(std::vector<ov::Dimension> (end - begin, 1));
         std::copy(begin, end, trimmedShape.begin());
         return trimmedShape;
     };
 
     // Check that output shapes are broadcastable => can be scheduled
     const auto& body_results = m_body->get_results();
-    PartialShape outPShape = body_results[0]->get_shape();
+//    PartialShape outPShape = body_results[0]->get_shape();
+    PartialShape outPShape = body_results[0]->get_input_partial_shape(0);
     for (size_t i = 0; i < body_results.size(); i++) {
-        auto shape_i = body_results[i]->get_shape();
+//        auto shape_i = body_results[i]->get_shape();
+        auto shape_i = body_results[i]->get_input_partial_shape(0);
         auto outputShape_i = std::get<0>(outputShapes[i]);
         // Check that the produced output shape corresponds to the passed shape
         // Some produced shapes may have been changed to be broadcastable (e.g. blocked + planar outputs),
@@ -205,25 +210,28 @@ Shape snippets::op::Subgraph::canonicalize(const BlockedShapeVector& outputShape
         PartialShape pShape_i(skipStartEndOnes(shape_i));
         bool compatibleWithPassedShape = PartialShape::broadcast_merge_into(pShape_i, skipStartEndOnes(outputShape_i),
                                                                               ::ngraph::op::AutoBroadcastType::NUMPY);
-        NODE_VALIDATION_CHECK(this, ov::shape_size(shape_i) == ov::shape_size(outputShape_i) &&
-                              compatibleWithPassedShape, "Inferred and passed results shapes are incompatible for snippet ",
-                              get_friendly_name(), " : ", shape_i, " vs ", outputShape_i, ".");
+        NODE_VALIDATION_CHECK(this, compatibleWithPassedShape, "Inferred and passed results shapes are incompatible for snippet ");
+//        todo: rewrite this check for dynamic shapes
+//        NODE_VALIDATION_CHECK(this, ov::shape_size(shape_i) == ov::shape_size(outputShape_i) &&
+//                              compatibleWithPassedShape, "Inferred and passed results shapes are incompatible for snippet ",
+//                              get_friendly_name(), " : ", shape_i, " vs ", outputShape_i, ".");
         // Check that output shapes are broadcastable to each other => can be scheduled
         bool compatibleWithOtherOutputs = PartialShape::broadcast_merge_into(outPShape, shape_i,
                                                                ::ngraph::op::AutoBroadcastType::NUMPY);
         NODE_VALIDATION_CHECK(this, compatibleWithOtherOutputs, "Snippets output shapes must be numpy broadcastable");
     }
-    master_shape = outPShape.get_shape();
+//    master_shape = outPShape.get_shape();
+    master_shape = outPShape;
     return master_shape;
 }
 
-Shape snippets::op::Subgraph::get_master_shape() {
+PartialShape snippets::op::Subgraph::get_master_shape() {
     auto results = m_body->get_results();
-    PartialShape outPShape = results[0]->get_shape();
+    PartialShape outPShape = results[0]->get_input_partial_shape(0);
     for (const auto& r : results)
         PartialShape::broadcast_merge_into(outPShape, r->get_input_shape(0),
                                            ::ngraph::op::AutoBroadcastType::NUMPY);
-    master_shape = outPShape.get_shape();
+    master_shape = outPShape;
     return master_shape;
 }
 
@@ -255,7 +263,8 @@ void snippets::op::Subgraph::convert_to_snippet_dialect() {
     //                         Store
     //                        Result
     // Note: Load* should be replaced with ScalarLoad in this example to avoid invalid read in vector Tile.
-    if (!master_shape.empty() && master_shape.back() != 1) {
+//    if (!master_shape.empty() && master_shape.back() != 1) {
+    if (master_shape.size() != 0 && master_shape[master_shape.size() - 1].is_static() && master_shape[master_shape.size() - 1] != 1) {
         manager.register_pass<snippets::pass::ReplaceLoadsWithScalarLoads>();
         manager.register_pass<snippets::pass::ReplaceStoresWithScalarStores>();
         manager.get_pass_config()->

@@ -169,21 +169,22 @@ void Snippet::selectOptimalPrimitiveDescriptor() {
 }
 
 void Snippet::calcJITParams(std::vector<size_t>& offsets, std::vector<int64_t>& sch_offsets) {
+    const auto& static_master_shape = master_shape.get_shape();
     const size_t numInputs = bodyInputShapes.size();
     const size_t numParams = numInputs + bodyOutputShapes.size();
     // Note that wen don't need offset for the last dim, since it's handled directly by Load/Store emitters
     const size_t offset_rank = master_shape.size() - 1;
     offsets.resize(numParams * (offset_rank), 1);
-    auto offset_calculation = [this, offset_rank](size_t *off, const std::vector<size_t>& dims) {
+    auto offset_calculation = [this, offset_rank, static_master_shape](size_t *off, const std::vector<size_t>& dims) {
         size_t k = dims.back();
         for (int i = offset_rank - 1; i >= 0; i--) {
-            auto tmp = (dims[i] == master_shape[i]) ? k : 0;
+            auto tmp = (dims[i] == static_master_shape[i]) ? k : 0;
             off[i] = tmp;
             k *= dims[i];
         }
     };
     for (size_t i = 0; i < numParams; i++) {
-        offset_calculation(offsets.data() + i * offset_rank, i < numInputs ? bodyInputShapes[i] : bodyOutputShapes[i - numInputs]);
+        offset_calculation(offsets.data() + i * offset_rank, i < numInputs ? bodyInputShapes[i].get_shape() : bodyOutputShapes[i - numInputs].get_shape());
     }
     for (auto &d : offsets)
         d *= dataSize;
@@ -196,7 +197,7 @@ void Snippet::calcJITParams(std::vector<size_t>& offsets, std::vector<int64_t>& 
         for (size_t i = 0; i < bodyInputShapes.size(); i++) {
             // the last offset is ignored, so offsets[offset_rank - 1] is actually outer tile offset
             int64_t off = offsets[(i + 1) * offset_rank - 1];
-            const auto& input_shape = bodyInputShapes[i];
+            const auto& input_shape = bodyInputShapes[i].get_shape();
             if (off > dataSize) {
                 sch_offsets[i] = 0;
                 // offset == data_size only if input_shape.back() == 1, but ScalarLoadEmitter doesn't perform increment
@@ -204,37 +205,44 @@ void Snippet::calcJITParams(std::vector<size_t>& offsets, std::vector<int64_t>& 
             } else if (off == dataSize) {
                 sch_offsets[i] = off;
                 // if outer tile is broadcasted then we need to step back to read the same data once again
-            } else if (input_shape[master_shape.size() - 2] != master_shape[master_shape.size() - 2] && input_shape.back() != 1) {
-                sch_offsets[i] = -1 * master_shape.back() * dataSize;
+            } else if (input_shape[master_shape.size() - 2] != static_master_shape[master_shape.size() - 2] && input_shape.back() != 1) {
+//                sch_offsets[i] = -1 * master_shape.back() * dataSize;
+                sch_offsets[i] = -1 * static_master_shape[master_shape.size() - 1] * dataSize;
             }
         }
         // we need to step back for outputs too if output shape is not equal to master_shape
         for (size_t i = 0; i < bodyOutputShapes.size(); i++) {
             int64_t off = offsets[(i + 1 + numInputs) * offset_rank - 1];
-            sch_offsets[i + numInputs] = off - master_shape.back() * dataSize;
+            sch_offsets[i + numInputs] = off - static_master_shape.back() * dataSize;
         }
     }
 }
 
-void Snippet::createPrimitive() {
+void Snippet::prepareParams() {
     const auto config = getSelectedPrimitiveDescriptor()->getConfig();
     dataSize = config.inConfs[0].getMemDesc()->getPrecision().size();
     // determine exec_domain and possibly perform some input_shape-related optimizations:
     // prepend with ones, collapse dimensions, determine tileRank
     define_schedule();
+    if (!master_shape.is_static())
+        IE_THROW() << "We probably need static master shape by now";
     std::vector<size_t> data_offsets;
     std::vector<int64_t> scheduler_offsets;
     calcJITParams(data_offsets, scheduler_offsets);
-    jit_snippets_compile_args jcp;
-    jcp.tileRank = tileRank;
-    std::copy(data_offsets.begin(), data_offsets.end(), jcp.data_offsets);
-    std::copy(scheduler_offsets.begin(), scheduler_offsets.end(), jcp.scheduler_offsets);
-    // code generation part
-    // it might be worth to generate explicitly for scheduler work amount for now,
-    // but in future some interface should be defined in order to communicate schedule for a kernel
-    // or generate schedule for a kernel.
-    // Here kernel is generated for most warying dimension by default.
-    generate(jcp);
+    if (isDynamic) {
+        generate(nullptr);
+    } else {
+        jit_snippets_compile_args jcp;
+        jcp.tileRank = tileRank;
+        std::copy(data_offsets.begin(), data_offsets.end(), jcp.data_offsets);
+        std::copy(scheduler_offsets.begin(), scheduler_offsets.end(), jcp.scheduler_offsets);
+        // code generation part
+        // it might be worth to generate explicitly for scheduler work amount for now,
+        // but in future some interface should be defined in order to communicate schedule for a kernel
+        // or generate schedule for a kernel.
+        // Here kernel is generated for most warying dimension by default.
+        generate(&jcp);
+    }
     auto initStartMemoryOffsets = [this]() {
         const auto config = getSelectedPrimitiveDescriptor()->getConfig();
         const size_t numInputs = inputShapes.size();
@@ -257,6 +265,10 @@ void Snippet::createPrimitive() {
     // initialize start offsets to src and dst memory
     // Needs to be done for every set of input shapes sce memory ptrs could've updated
     initStartMemoryOffsets();
+}
+
+bool Snippet::needPrepareParams() const {
+    return (schedule.ptr == nullptr);
 }
 
 void Snippet::execute(dnnl::stream strm) {
@@ -311,12 +323,19 @@ void Snippet::define_schedule() {
         ngraph::element::Type precision = InferenceEngine::details::convertPrecision(blockedDesc->getPrecision());
         return ngraph::snippets::op::Subgraph::BlockedShape{shape, blocking, precision};
     };
-    auto prependWithOnes = [this](const std::vector<size_t>& dims) {
+//    auto prependWithOnes = [this](const std::vector<size_t>& dims) {
+//        if (tensorRank <= dims.size())
+//            return dims;
+//        VectorDims result(tensorRank, 1);
+//        std::copy(dims.begin(), dims.end(), &result[tensorRank - dims.size()]);
+//        return result;
+//    };
+    auto prependWithOnes = [this](const PartialShape& dims) {
         if (tensorRank <= dims.size())
             return dims;
-        VectorDims result(tensorRank, 1);
+        std::vector<ov::Dimension> result(tensorRank, 1);
         std::copy(dims.begin(), dims.end(), &result[tensorRank - dims.size()]);
-        return result;
+        return PartialShape {result};
     };
     ngraph::snippets::op::Subgraph::BlockedShapeVector input_blocked_shapes;
     for (size_t i = 0; i < inputShapes.size(); i++)
@@ -330,14 +349,29 @@ void Snippet::define_schedule() {
     tensorRank = std::max(static_cast<size_t>(rank6D), master_shape.size());
     // Canonicalization broadcasts inputs and outputs to max input rank, which can be smaller than tensorRank
     // prepend to enable 6D scheduler
-    exec_domain = prependWithOnes(master_shape);
+    master_shape = prependWithOnes(master_shape);
     const auto &body = snippet->get_body();
     for (const auto& p : body->get_parameters()) {
         bodyInputShapes.emplace_back(prependWithOnes(p->get_shape()));
     }
 
     auto findDimsToCollapse = [this]() -> int {
-        auto collapseLastDims = [](std::vector<size_t>& dims, size_t dimsToCollapse){
+//        auto collapseLastDims = [](std::vector<size_t>& dims, size_t dimsToCollapse){
+//            if (dimsToCollapse >= dims.size() - 1)
+//                IE_THROW() << "Got invalid number of dims to collapse. Expected < " << dims.size() - 1 << " got " << dimsToCollapse;
+//            for (int i = dims.size() - 2; i > dims.size() - dimsToCollapse - 2; i--) {
+//                dims[dims.size() - 1] *= dims[i];
+//            }
+//
+//            for (int i = dims.size() - 2; i >= dimsToCollapse; i--) {
+//                dims[i] = dims[i - dimsToCollapse];
+//            }
+//
+//            for (int i = dimsToCollapse - 1; i >= 0; i--) {
+//                dims[i] = 1;
+//            }
+//        };
+        auto collapseLastDims = [](PartialShape& dims, size_t dimsToCollapse) {
             if (dimsToCollapse >= dims.size() - 1)
                 IE_THROW() << "Got invalid number of dims to collapse. Expected < " << dims.size() - 1 << " got " << dimsToCollapse;
             for (int i = dims.size() - 2; i > dims.size() - dimsToCollapse - 2; i--) {
@@ -355,9 +389,14 @@ void Snippet::define_schedule() {
         int collapsedDims = 0;
         size_t minimalConcurrency = parallel_get_max_threads();
         size_t minimalJitWorkAmount = 256;
-        size_t currentJitWorkAmount = exec_domain.back();
+        // If one of the last two dims is dynamic then skip collapsing and pack it to dynamic Tile
+        if (!master_shape[tensorRank - 1].is_static() || !master_shape[tensorRank - 2].is_static()) {
+            tileRank++;
+            return 0;
+        }
+        size_t currentJitWorkAmount = master_shape[tensorRank - 1].get_length();
         while (currentJitWorkAmount < minimalJitWorkAmount && currentJitWorkAmount < fullWorkAmount) {
-            if (static_cast<int>(exec_domain.size()) - collapsedDims - 2 < 0)
+            if (static_cast<int>(master_shape.size()) - collapsedDims - 2 < 0)
                 break;
 
             bool canCollapse = true;
@@ -370,7 +409,7 @@ void Snippet::define_schedule() {
                 }
             }
 
-            size_t nextJitWorkAmount = currentJitWorkAmount * exec_domain[exec_domain.size() - 2];
+            size_t nextJitWorkAmount = currentJitWorkAmount * master_shape[master_shape.size() - 2].get_length();
             if (fullWorkAmount / nextJitWorkAmount >= minimalConcurrency) {
                 currentJitWorkAmount = nextJitWorkAmount;
                 // if we cannot use dim collapsing we should use tile2D
@@ -385,19 +424,13 @@ void Snippet::define_schedule() {
                 collapsedDims++;
                 for (auto &d : bodyInputShapes)
                     collapseLastDims(d, 1);
+                collapseLastDims(master_shape, 1);
             } else {
                 break;
             }
         }
         return collapsedDims;
     };
-
-//    fullWorkAmount = 1;
-//    for (const auto &d : exec_domain) {
-//        fullWorkAmount *= d;
-//    }
-    fullWorkAmount = std::accumulate(exec_domain.begin(), exec_domain.end(), 1, std::multiplies<size_t>());
-
     batchDimIdx = tensorRank - exec_domain.size();
     // Note that exec_domain can be modified inside find_dims_to_collapse() and/or initSchedulingInfo()
     findDimsToCollapse();
@@ -409,20 +442,24 @@ void Snippet::define_schedule() {
     master_shape = snippet->get_master_shape();
     for (const auto &r : snippet->get_body()->get_results())
         bodyOutputShapes.emplace_back(r->get_input_shape(0));
-    exec_domain = master_shape;
-    for (int i = 0; i < tileRank; i++) {
-        schedulerWorkAmount = fullWorkAmount / exec_domain[exec_domain.size() - 1 - i];
-        exec_domain[exec_domain.size() - 1 - i] = 1;
+    // we need fullWorkAmount only
+    if (master_shape.is_static()) {
+        exec_domain = master_shape.get_shape();
+        fullWorkAmount = std::accumulate(exec_domain.begin(), exec_domain.end(), 1, std::multiplies<size_t>());
+        for (int i = 0; i < tileRank; i++) {
+            schedulerWorkAmount = fullWorkAmount / exec_domain[exec_domain.size() - 1 - i];
+            exec_domain[exec_domain.size() - 1 - i] = 1;
+        }
     }
 }
 
-void Snippet::generate(const jit_snippets_compile_args& jcp) {
+void Snippet::generate(const jit_snippets_compile_args* jcp) {
     size_t harness_num_dims = exec_domain.size() - tileRank;
     if (harness_num_dims > SNIPPETS_MAX_HARNESS_DIMS) {
         canUseOptimizedImpl = false;
         harness_num_dims = SNIPPETS_MAX_HARNESS_DIMS;
     }
-    schedule = snippet->generate(reinterpret_cast<const void*>(&jcp));
+    schedule = snippet->generate(reinterpret_cast<const void*>(jcp));
 }
 
 void Snippet::schedule_6d(const jit_snippets_call_args& call_args) const {
@@ -431,6 +468,7 @@ void Snippet::schedule_6d(const jit_snippets_call_args& call_args) const {
     parallel_for5d(dom[0], dom[1], dom[2], dom[3], dom[4],
         [&](int64_t d0, int64_t d1, int64_t d2, int64_t d3, int64_t d4) {
             int64_t indexes[] = {d0, d1, d2, d3, d4};
+            std::cerr << dom[0] << " " << dom[1] << " " << dom[2] << " " << dom[3] << " " << dom[4] << "\n";
             schedule.get_callable<kernel>()(indexes, &call_args);
         });
 }

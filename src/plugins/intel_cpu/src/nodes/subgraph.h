@@ -32,7 +32,8 @@ public:
     void selectOptimalPrimitiveDescriptor() override;
 
     // Here we convert to canonical for & jit everything
-    void createPrimitive() override;
+    void prepareParams() override;
+    bool needPrepareParams() const override;
 
     bool canBeInPlace() const override;
     bool created() const override;
@@ -48,7 +49,7 @@ private:
     void define_schedule();
     void calcJITParams(std::vector<size_t>& offsets, std::vector<int64_t>& sch_offsets);
 
-    void generate(const jit_snippets_compile_args&);
+    void generate(const jit_snippets_compile_args*);
 
     // Evaluates generated snippet using parallel backend
     void schedule_6d(const jit_snippets_call_args& const_args) const;
@@ -65,8 +66,10 @@ private:
 
     // Holds index of output used as in execution domain
     // it should be compatible with a schedule's work size
+//    std::vector<size_t> exec_domain = {};
+//    std::vector<size_t> master_shape = {};
     std::vector<size_t> exec_domain = {};
-    std::vector<size_t> master_shape = {};
+    PartialShape master_shape = {};
 
     /// scheduling info
     size_t batchDimIdx = 0;
@@ -81,8 +84,10 @@ private:
     size_t dataSize = 0;
 
     // body Input & output shapes anre optimized and not necessarily the same as inputShapes and outputShapes
-    std::vector<std::vector<size_t>> bodyInputShapes = {};
-    std::vector<std::vector<size_t>> bodyOutputShapes = {};
+//    std::vector<std::vector<size_t>> bodyInputShapes = {};
+//    std::vector<std::vector<size_t>> bodyOutputShapes = {};
+    std::vector<PartialShape> bodyInputShapes = {};
+    std::vector<PartialShape> bodyOutputShapes = {};
     std::vector<ptrdiff_t> start_offset_in = {};
     std::vector<ptrdiff_t> start_offset_out = {};
 

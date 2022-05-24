@@ -39,7 +39,7 @@ auto ngraph::snippets::getRegisters(std::shared_ptr<ngraph::Node>& n) -> ngraph:
 }
 
 ngraph::snippets::code ngraph::snippets::Generator::generate(std::shared_ptr<ov::Model>& m,
-                                                             const std::vector<size_t>& exec_domain,
+                                                             const ov::PartialShape& master_shape,
                                                              const void* compile_params) const {
     OV_ITT_SCOPED_TASK(ngraph::pass::itt::domains::SnippetsTransform, "Snippets::Generator::generate")
     if (!target->is_supported())
@@ -86,12 +86,24 @@ ngraph::snippets::code ngraph::snippets::Generator::generate(std::shared_ptr<ov:
                     std::make_pair(std::vector<size_t>{1}, std::vector<size_t>{}));
 
     OV_ITT_TASK_NEXT(GENERATE, "::Tiles2D")
-    // wrapping into tiles2D
-    auto tile_scheduler = std::make_shared<ngraph::snippets::op::TileScheduler>(vector_region, scalar_region,
-                                                                                                       input_shapes, output_shapes, exec_domain);
-    tile_scheduler->compile_params = compile_params;
-    const auto& tile_scheduler_region = std::make_pair(target->get(ngraph::snippets::op::TileScheduler::get_type_info_static())(tile_scheduler),
-                                                       std::make_pair(std::vector<size_t>({in, out, target->get_lanes()}), std::vector<size_t>{}));
+    // If compile params are provided then it's a static case
+    EmitterCode tile_scheduler_region;
+    if (compile_params) {
+        if (!master_shape.is_static())
+            ngraph_error("Snippets: Attempt to create static TileScheduler with non-static master_shape");
+        auto tile_scheduler = std::make_shared<ngraph::snippets::op::TileScheduler>(vector_region,
+                                                                                    scalar_region,
+                                                                                    input_shapes,
+                                                                                    output_shapes,
+                                                                                    master_shape.get_shape());
+        tile_scheduler->compile_params = compile_params;
+        tile_scheduler_region =
+            std::make_pair(target->get(ngraph::snippets::op::TileScheduler::get_type_info_static())(tile_scheduler),
+                           std::make_pair(std::vector<size_t>({in, out, target->get_lanes()}), std::vector<size_t>{}));
+    } else {
+        // call dynamic tile scheduler
+        throw ngraph_error("dynamic scheduler is not implemented yet");
+    }
 
     OV_ITT_TASK_NEXT(GENERATE, "::EmitCode")
     // emission
