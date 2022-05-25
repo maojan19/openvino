@@ -19,6 +19,7 @@ namespace pass {
  */
 class InsertMoveBroadcast: public ngraph::pass::MatcherPass {
 public:
+    OPENVINO_RTTI("SnippetsInsertMoveBroadcast");
     InsertMoveBroadcast();
 };
 

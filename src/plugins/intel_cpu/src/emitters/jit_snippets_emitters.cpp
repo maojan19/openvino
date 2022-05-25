@@ -168,8 +168,6 @@ TileSchedulerEmitter::TileSchedulerEmitter(dnnl::impl::cpu::x64::jit_generator* 
         IE_THROW() << "TileEmitter invoked without compile_params";
     body = {tile_scheduler->vector_region, tile_scheduler->scalar_region};
     master_shape = tile_scheduler->master_shape;
-//    input_shapes = tile_scheduler->input_shapes;
-//    output_shapes = tile_scheduler->output_shapes;
     jcp = *reinterpret_cast<const jit_snippets_compile_args*>(tile_scheduler->compile_params);
 }
 void TileSchedulerEmitter::emit_code(const std::vector<size_t> &in,

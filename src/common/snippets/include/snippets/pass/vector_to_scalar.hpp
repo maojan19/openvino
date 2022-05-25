@@ -20,6 +20,7 @@ namespace pass {
  */
 class ReplaceLoadsWithScalarLoads: public ngraph::pass::MatcherPass {
 public:
+    OPENVINO_RTTI("SnippetsReplaceLoadsWithScalarLoads");
     ReplaceLoadsWithScalarLoads();
 };
 
@@ -32,6 +33,7 @@ public:
  */
 class ReplaceStoresWithScalarStores: public ngraph::pass::MatcherPass {
 public:
+    OPENVINO_RTTI("SnippetsReplaceStoresWithScalarStores");
     ReplaceStoresWithScalarStores();
 };
 

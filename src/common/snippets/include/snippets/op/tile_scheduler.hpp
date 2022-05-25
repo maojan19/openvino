@@ -25,18 +25,14 @@ public:
 
     TileScheduler(std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo> vector_region,
                   std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo> scalar_region,
-                  std::vector<std::vector<size_t>> input_shapes,
-                  std::vector<std::vector<size_t>> output_shapes,
                   std::vector<size_t> master_shape);
     TileScheduler() = default;
     std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo> vector_region;
     std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo> scalar_region;
-    std::vector<std::vector<size_t>> input_shapes;
-    std::vector<std::vector<size_t>> output_shapes;
     std::vector<size_t> master_shape;
     // todo: this clone_with_new_inputs is irrelevant
     std::shared_ptr<Node> clone_with_new_inputs(const OutputVector& inputs) const override {
-        return std::make_shared<TileScheduler>(vector_region, scalar_region, input_shapes, output_shapes, master_shape);
+        return std::make_shared<TileScheduler>(vector_region, scalar_region, master_shape);
     }
     const void *compile_params;
 };

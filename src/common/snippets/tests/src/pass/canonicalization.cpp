@@ -49,8 +49,8 @@ TEST_P(CanonicalizationTests, Add) {
     function = snippets_function->getOriginal();
     function_ref = snippets_function->getReference();
     auto subgraph =  getTokenizedSubgraph(function);
-    Shape canonical_output_shape = subgraph->canonicalize(output_blocked_shapes, input_blocked_shapes);
-    ASSERT_DIMS_EQ(canonical_output_shape, expected_output_shape);
+    PartialShape canonical_output_shape = subgraph->canonicalize(output_blocked_shapes, input_blocked_shapes);
+    ASSERT_DIMS_EQ(canonical_output_shape.to_shape(), expected_output_shape);
 }
 
 namespace CanonicalizationTestsInstantiation {

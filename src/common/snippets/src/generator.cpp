@@ -47,13 +47,6 @@ ngraph::snippets::code ngraph::snippets::Generator::generate(std::shared_ptr<ov:
 
     auto params = m->get_parameters();
     auto results = m->get_results();
-    std::vector<std::vector<size_t>> input_shapes;
-//    for (const auto& p : params)
-//        input_shapes.emplace_back(p->get_output_shape(0));
-    std::vector<std::vector<size_t>> output_shapes;
-    // have to compute updated exec_domain
-//    for (const auto& r : results)
-//        output_shapes.emplace_back(r->get_input_shape(0));
     auto in = params.size();
     auto out = results.size();
 
@@ -61,13 +54,7 @@ ngraph::snippets::code ngraph::snippets::Generator::generate(std::shared_ptr<ov:
     // vector tile
     std::vector<EmitterCode> lowered;
     for (auto n : m->get_ordered_ops()) {
-        const auto & tinfo = n->get_type_info();
-        std::cerr << "NAME: " << tinfo.name << "\n";
-//        lowered.emplace_back(std::make_pair(target->get(n->get_type_info())(n), ngraph::snippets::getRegisters(n)));
-        auto func = target->get(n->get_type_info());
-        auto first = func(n);
-        auto second = ngraph::snippets::getRegisters(n);
-        lowered.emplace_back(std::make_pair(first, second));
+        lowered.emplace_back(std::make_pair(target->get(n->get_type_info())(n), ngraph::snippets::getRegisters(n)));
     }
     OV_ITT_TASK_NEXT(GENERATE, "::ScalarTile")
 
@@ -100,8 +87,6 @@ ngraph::snippets::code ngraph::snippets::Generator::generate(std::shared_ptr<ov:
             ngraph_error("Snippets: Attempt to create static TileScheduler with non-static master_shape");
         auto tile_scheduler = std::make_shared<ngraph::snippets::op::TileScheduler>(vector_region,
                                                                                     scalar_region,
-                                                                                    input_shapes,
-                                                                                    output_shapes,
                                                                                     master_shape.get_shape());
         tile_scheduler->compile_params = compile_params;
         tile_scheduler_region =

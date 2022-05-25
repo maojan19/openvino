@@ -315,10 +315,6 @@ void Snippet::createPrimitive() {
     // NB! bodyInputShapes are updated, so body reshape might be needed
     normalizeShapes();
     if (master_shape.is_static()) {
-        for (int i = 0; i < tileRank; i++) {
-            schedulerWorkAmount = fullWorkAmount / exec_domain[exec_domain.size() - 1 - i];
-            exec_domain[exec_domain.size() - 1 - i] = 1;
-        }
         prepareParams();
         jit_snippets_compile_args jcp;
         jcp.tileRank = tileRank;
@@ -329,9 +325,9 @@ void Snippet::createPrimitive() {
         // but in future some interface should be defined in order to communicate schedule for a kernel
         // or generate schedule for a kernel.
         // Here kernel is generated for most warying dimension by default.
-        generate(&jcp);
+        schedule = snippet->generate(reinterpret_cast<const void*>(&jcp));
     } else {
-        generate(nullptr);
+        schedule = snippet->generate(nullptr);
     }
 }
 
@@ -348,6 +344,8 @@ void Snippet::prepareParams() {
         updated_shapes[i] = ov::PartialShape(bodyInputShapes[i]);
     snippet->get_body()->reshape(updated_shapes);
     master_shape = snippet->get_master_shape();
+    for (const auto &r : snippet->get_body()->get_results())
+        bodyOutputShapes.emplace_back(r->get_input_shape(0));
 
     calcJITParams(data_offsets, scheduler_offsets);
     auto initStartMemoryOffsets = [this]() {
@@ -560,7 +558,7 @@ void Snippet::schedule_6d(const jit_snippets_call_args& call_args) const {
     parallel_for5d(dom[0], dom[1], dom[2], dom[3], dom[4],
         [&](int64_t d0, int64_t d1, int64_t d2, int64_t d3, int64_t d4) {
             int64_t indexes[] = {d0, d1, d2, d3, d4};
-            std::cerr << dom[0] << " " << dom[1] << " " << dom[2] << " " << dom[3] << " " << dom[4] << "\n";
+//            std::cerr << dom[0] << " " << dom[1] << " " << dom[2] << " " << dom[3] << " " << dom[4] << "\n";
             schedule.get_callable<kernel>()(indexes, &call_args);
         });
 }

@@ -19,6 +19,7 @@ namespace pass {
  */
 class ConvertConstantsToScalars: public ngraph::pass::MatcherPass {
 public:
+    OPENVINO_RTTI("ConvertConstantsToScalars");
     ConvertConstantsToScalars();
 };
 

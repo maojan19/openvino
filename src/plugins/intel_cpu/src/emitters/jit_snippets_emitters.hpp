@@ -121,8 +121,6 @@ private:
                    const ov::intel_cpu::emitter_context *emit_context) const override;
 
     jit_snippets_compile_args jcp;
-    std::vector<std::vector<size_t>> input_shapes;
-    std::vector<std::vector<size_t>> output_shapes;
     std::vector<size_t> master_shape;
 };
 

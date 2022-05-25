@@ -19,6 +19,7 @@ namespace pass {
  */
 class InsertLoad: public ngraph::pass::MatcherPass {
 public:
+    OPENVINO_RTTI("SnippetsInsertLoad");
     InsertLoad();
 };
 
@@ -30,6 +31,7 @@ public:
  */
 class InsertStore: public ngraph::pass::MatcherPass {
 public:
+    OPENVINO_RTTI("SnippetsInsertStore");
     InsertStore();
 };
 

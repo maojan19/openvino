@@ -18,6 +18,7 @@ namespace pass {
  */
 class ConvertPowerToPowerStatic: public ngraph::pass::MatcherPass {
 public:
+    OPENVINO_RTTI("ConvertPowerToPowerStatic");
     ConvertPowerToPowerStatic();
 };
 
