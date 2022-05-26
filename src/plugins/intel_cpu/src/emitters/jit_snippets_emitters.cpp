@@ -115,10 +115,10 @@ void KernelEmitter::validate_arguments(const std::vector<size_t> &in,
                                        const std::vector<size_t> &out,
                                        const std::vector<size_t> &pool,
                                        const std::vector<size_t> &gpr) const {
-        if (!in.empty())
-            IE_THROW() << "KernelEmitter got invalid number of inputs. Expected 0, got " << in.size();
-        if (!out.empty())
-            IE_THROW() << "KKernelEmitter got invalid number of outputs. Expected 0, got " << out.size();
+    if (!in.empty())
+        IE_THROW() << "KernelEmitter got invalid number of inputs. Expected 0, got " << in.size();
+    if (!out.empty())
+        IE_THROW() << "KKernelEmitter got invalid number of outputs. Expected 0, got " << out.size();
 }
 
 void KernelEmitter::emit_impl(const std::vector<size_t>& in,
@@ -193,15 +193,10 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
     // remove data ptr regs from the pool, since they should be preserved
     const auto& data_ptr_reg_idxs(out);
 
-    // It is critical that reg_outer_amount and reg_inner_amount represent the
-    // first two runtime arguments, since they are used to calculating offsets
-    Reg64 reg_outer_amount = Reg64(static_cast<int>(in[3]));
-    Reg64 reg_inner_amount = Reg64(static_cast<int>(in[4]));
-
-    Label for_body;
-
-    Reg64 reg_indexes = reg_outer_amount;
-    Reg64 reg_const_params = reg_inner_amount;
+    // It is critical that reg_indexes and reg_const_params represent the
+    // first two runtime arguments, since they are used to calculate offsets
+    Reg64 reg_indexes = Reg64(static_cast<int>(in[3]));
+    Reg64 reg_const_params = Reg64(static_cast<int>(in[4]));
     auto init_ptrs_with_offsets = [&](Reg64 pointer, const int64_t *offsets, Reg64 reg_tmp) {
         for (int j = 0; j < harness_num_dims; j++) {
             if (jcp.output_dims[j] != 1 && offsets[j] != 0) {
@@ -222,21 +217,19 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
         Reg64 reg_tmp = i < num_params-1 ? Reg64(static_cast<int>(data_ptr_reg_idxs.back())) : reg_const_params;
         init_ptrs_with_offsets(data_ptr_regs[i], &jcp.data_offsets[i * harness_num_dims], reg_tmp);
     }
+
+    // We don't need runtime args, since the data_ptrs are already initialized,
+    // So let's reuse reg_indexes and reg_const_params to store work amounts
+    Reg64 reg_outer_amount = reg_indexes;
+    Reg64 reg_inner_amount = reg_const_params;
     auto emit_tiles = [&]() {
-        bool inner_work_amount_is_set = false;
         auto process_tile =
-                [&](bool body_condition, const std::vector<EmitterCode>& body,
-                                    bool tile_condition, const EmitterCode& tile) {
-            if (body_condition) {
-                // emit Tile body directly if only one tile iteration is needed
+                [&](const bool evaluate_once, const std::vector<EmitterCode>& body, const EmitterCode& tile) {
+            // If Tile is evaluated only once, then we can emit its body directly and skip work_amount decrements and checks
+            if (evaluate_once) {
                 for (auto& code : body)
                     code.first->emit_code(code.second.first, code.second.second, vec_pool, gpr_pool);
-            } else if (tile_condition) {
-                // Need to set proper work amount for inner tiles before code emission
-                if (!inner_work_amount_is_set) {
-                    h->mov(reg_inner_amount, inner_work_amount);
-                    inner_work_amount_is_set = true;
-                }
+            } else {
                 std::vector<size_t> in_regs, out_regs;
                 std::tie(in_regs, out_regs) = tile.second;
                 // pass work_amount reg to Tile
@@ -244,9 +237,29 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
                 tile.first->emit_code(in_regs, out_regs, vec_pool, gpr_pool);
             }
         };
-        process_tile(inner_work_amount == vector_size, vector_tile_body, inner_work_amount > vector_size, vector_tile);
-        process_tile(inner_work_amount % vector_size == 1, scalar_tile_body, inner_work_amount % vector_size > 1, scalar_tile);
+        bool vector_evaluate_once = false;
+        if (inner_work_amount >= vector_size) {
+            vector_evaluate_once = inner_work_amount < 2 * vector_size;
+            // Need to set proper work amount for inner tiles if evaluated multiple times
+            if (!vector_evaluate_once)
+                h->mov(reg_inner_amount, inner_work_amount);
+            process_tile(vector_evaluate_once, vector_tile_body, vector_tile);
+        }
+        if (inner_work_amount % vector_size >= 1) {
+            bool scalar_evaluate_once = inner_work_amount % vector_size < 2;
+            if (!scalar_evaluate_once) {
+                // vector_tile is not executed, work_amount is not set
+                if (inner_work_amount < vector_size)
+                    h->mov(reg_inner_amount, inner_work_amount);
+                // vector_tile is executed, but work_amount is neither set nor decremented appropriately.
+                else if (vector_evaluate_once)
+                    h->mov(reg_inner_amount, inner_work_amount - vector_size);
+                // else: vector_tile is executed multiple times, so work_amount is already set
+            }
+            process_tile(scalar_evaluate_once, scalar_tile_body, scalar_tile);
+        }
     };
+    Label for_body;
 
     if (outer_work_amount == 1) {
         // emit code directly without looping over external dim

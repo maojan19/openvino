@@ -9,7 +9,9 @@ namespace ov {
 namespace test {
 namespace snippets {
 namespace {
-std::vector<ov::Shape> input_shapes {{1, 64, 10, 10}, {1, 1, 17, 37}, {1, 1, 1, 128}, {1, 1, 1, 3}, {1, 1, 1, 1}, {1, 1, 1, 16}};
+// Note that we need these shapes to cover all cases of code emission (none/one/multiple of scalar/vector tiles)
+std::vector<ov::Shape> input_shapes {{1, 64, 10, 10}, {1, 1, 17, 37}, {1, 1, 1, 1}, {1, 1, 1, 7},
+                                    {1, 1, 1, 128}, {1, 1, 1, 14}, {1, 1, 1, 16}, {1, 1, 1, 30}};
 INSTANTIATE_TEST_SUITE_P(smoke_Snippets_Eltwise, MaxNumParamsEltwiseSinh,
                      ::testing::Combine(
                              ::testing::ValuesIn(input_shapes),
