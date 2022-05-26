@@ -19,17 +19,24 @@ namespace intel_cpu {
 #define SNIPPETS_MAX_SNIPPETS_DIMS 12
 #define SNIPPETS_MAX_HARNESS_DIMS 5
 #define SNIPPETS_MAX_TILE_RANK 2
+#define SNIPPETS_DYNAMIC_MASTER_SHAPE_RANK 6
 #define GET_OFF(field) offsetof(jit_snippets_call_args, field)
 struct jit_snippets_call_args {
     const void *src_ptrs[SNIPPETS_MAX_SNIPPETS_DIMS] = {};
     void *dst_ptrs[SNIPPETS_MAX_SNIPPETS_DIMS] = {};
+    int64_t scheduler_offsets[SNIPPETS_MAX_SNIPPETS_DIMS] = {};
+    size_t scheduler_work_amounts[SNIPPETS_MAX_TILE_RANK] = {};
+    int64_t data_offsets[SNIPPETS_MAX_SNIPPETS_DIMS * SNIPPETS_MAX_HARNESS_DIMS] = {};
+//    size_t* master_shape;
+//    size_t masterRank;
 };
 
 struct jit_snippets_compile_args {
     int64_t scheduler_dims[SNIPPETS_MAX_TILE_RANK] = {};
     int64_t scheduler_offsets[SNIPPETS_MAX_SNIPPETS_DIMS] = {};
+    size_t scheduler_work_amounts[SNIPPETS_MAX_SNIPPETS_DIMS] = {};
     int64_t data_offsets[SNIPPETS_MAX_SNIPPETS_DIMS * SNIPPETS_MAX_HARNESS_DIMS] = {};
-    std::vector<size_t> output_dims = {};
+    std::vector<size_t> master_shape{};
 };
 ///
 /// \brief jit_container_emitter designed to wrap Emitters that contain other Emitters (presently KernelEmitter,
@@ -125,7 +132,20 @@ private:
 
     void emit_tiles(const Reg64&, const std::vector<Reg64>&, size_t, const std::vector<size_t>& , const std::vector<size_t>&) const;
 
+    void emit_static_impl(const std::vector<size_t>& in,
+                   const std::vector<size_t>& out,
+                   const std::vector<size_t>& pool,
+                   const std::vector<size_t>& gpr,
+                   const ov::intel_cpu::emitter_context *emit_context) const;
+
+    void emit_dynamic_impl(const std::vector<size_t>& in,
+                          const std::vector<size_t>& out,
+                          const std::vector<size_t>& pool,
+                          const std::vector<size_t>& gpr,
+                          const ov::intel_cpu::emitter_context *emit_context) const;
+
     jit_snippets_compile_args jcp;
+    bool is_static;
 };
 
 ///
