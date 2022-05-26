@@ -89,6 +89,7 @@ private:
 
     std::vector<size_t> data_offsets;
     std::vector<int64_t> scheduler_offsets;
+    std::vector<size_t> static_master_shape = {}; // placeholder to pass per-inference static master_shape for dynamic cases
 
     // body Input & output shapes anre optimized and not necessarily the same as inputShapes and outputShapes
 //    std::vector<std::vector<size_t>> bodyInputShapes = {};

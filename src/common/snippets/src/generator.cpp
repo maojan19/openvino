@@ -87,7 +87,7 @@ ngraph::snippets::code ngraph::snippets::Generator::generate(std::shared_ptr<ov:
             ngraph_error("Snippets: Attempt to create static TileScheduler with non-static master_shape");
         auto tile_scheduler = std::make_shared<ngraph::snippets::op::TileScheduler>(vector_region,
                                                                                     scalar_region,
-                                                                                    master_shape.get_shape());
+                                                                                    master_shape.is_static());
         tile_scheduler->compile_params = compile_params;
         tile_scheduler_region =
             std::make_pair(target->get(ngraph::snippets::op::TileScheduler::get_type_info_static())(tile_scheduler),

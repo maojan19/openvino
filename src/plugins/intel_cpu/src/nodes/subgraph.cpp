@@ -318,6 +318,7 @@ void Snippet::createPrimitive() {
         prepareParams();
         jit_snippets_compile_args jcp;
         jcp.tileRank = tileRank;
+        jcp.master_shape = master_shape.get_shape();
         std::copy(data_offsets.begin(), data_offsets.end(), jcp.data_offsets);
         std::copy(scheduler_offsets.begin(), scheduler_offsets.end(), jcp.scheduler_offsets);
         // code generation part
@@ -390,6 +391,15 @@ void Snippet::execute(dnnl::stream strm) {
 
     for (size_t i = 0; i < dstMemPtrs.size(); i++)
         call_args.dst_ptrs[i] = reinterpret_cast<uint8_t*>(dstMemPtrs[i]->GetData()) + start_offset_out[i];
+
+    if (isDynamic) {
+        call_args.scheduler_offsets = scheduler_offsets.data();
+        call_args.data_offsets = data_offsets.data();
+        static_master_shape = master_shape.get_shape();
+        call_args.master_shape = static_master_shape.data();
+        call_args.tileRank = tileRank;
+        call_args.masterRank = static_master_shape.size();
+    }
 
     if (tensorRank == rank6D) {
         schedule_6d(call_args);

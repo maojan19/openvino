@@ -7,6 +7,6 @@
 
 ngraph::snippets::op::TileScheduler::TileScheduler(std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo> vector_region,
                                                    std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo> scalar_region,
-                                                   std::vector<size_t> master_shape)
-    : Op(), vector_region{std::move(vector_region)}, scalar_region{std::move(scalar_region)}, master_shape{std::move(master_shape)} {
+                                                   bool is_static)
+    : Op(), vector_region{std::move(vector_region)}, scalar_region{std::move(scalar_region)}, is_static{std::move(is_static)} {
 }
