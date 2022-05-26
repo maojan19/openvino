@@ -23,13 +23,14 @@ class TileScheduler : public ngraph::op::Op {
 public:
     OPENVINO_OP("TileScheduler", "SnippetsOpset");
 
-    TileScheduler(const AllocatedEmitter& vector_region, const AllocatedEmitter& scalar_region);
+    TileScheduler(const AllocatedEmitter& vector_region, const AllocatedEmitter& scalar_region, bool is_static);
     TileScheduler() = default;
     AllocatedEmitter vector_region;
     AllocatedEmitter scalar_region;
+    bool is_static = true;
     // todo: this clone_with_new_inputs is irrelevant
     std::shared_ptr<Node> clone_with_new_inputs(const OutputVector& inputs) const override {
-        return std::make_shared<TileScheduler>(vector_region, scalar_region);
+        return std::make_shared<TileScheduler>(vector_region, scalar_region, is_static);
     }
     const void *compile_params;
 };
