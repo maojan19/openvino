@@ -50,10 +50,10 @@ private:
 
 //    void define_schedule();
     void normalizeShapes();
-    void optimizeExecDomain();
-    void calcJITParams(std::vector<size_t>& offsets, std::vector<int64_t>& sch_offsets);
+    void optimizeExecDomain(std::vector<PartialShape>&, PartialShape&);
+    void calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>& sch_offsets) const;
 
-    void generate(const jit_snippets_compile_args*);
+        void generate(const jit_snippets_compile_args*);
 
     // Evaluates generated snippet using parallel backend
     void schedule_6d(const jit_snippets_call_args& const_args) const;
@@ -73,7 +73,6 @@ private:
 //    std::vector<size_t> exec_domain = {};
 //    std::vector<size_t> master_shape = {};
     std::vector<size_t> exec_domain = {};
-    PartialShape master_shape = {};
 
     /// scheduling info
     size_t batchDimIdx = 0;
@@ -87,15 +86,18 @@ private:
     std::vector<MemoryPtr> dstMemPtrs = {};
     size_t dataSize = 0;
 
-    std::vector<size_t> data_offsets;
+    std::vector<int64_t> data_offsets;
     std::vector<int64_t> scheduler_offsets;
-    std::vector<size_t> static_master_shape = {}; // placeholder to pass per-inference static master_shape for dynamic cases
+    std::vector<size_t> scheduler_work_amounts;
+    std::vector<size_t> static_master_shape_placeholder = {}; // placeholder to pass per-inference static master_shape for dynamic cases
 
     // body Input & output shapes anre optimized and not necessarily the same as inputShapes and outputShapes
-//    std::vector<std::vector<size_t>> bodyInputShapes = {};
-//    std::vector<std::vector<size_t>> bodyOutputShapes = {};
-    std::vector<PartialShape> bodyInputShapes = {};
-    std::vector<PartialShape> bodyOutputShapes = {};
+    std::vector<PartialShape> normInputShapes = {};
+    std::vector<PartialShape> normOutputShapes = {};
+    std::vector<PartialShape> staticNormInputShapes = {};
+    std::vector<PartialShape> staticNormOutputShapes = {};
+//    PartialShape staticMasterShape = {};
+    PartialShape masterShape = {};
     std::vector<ptrdiff_t> start_offset_in = {};
     std::vector<ptrdiff_t> start_offset_out = {};
 

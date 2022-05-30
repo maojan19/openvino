@@ -26,9 +26,9 @@ struct jit_snippets_call_args {
     void *dst_ptrs[SNIPPETS_MAX_SNIPPETS_DIMS] = {};
     int64_t* scheduler_offsets;
     size_t* scheduler_work_amounts;
-    size_t* data_offsets;
-    size_t* master_shape;
-    size_t masterRank;
+    int64_t* data_offsets;
+//    size_t* master_shape;
+//    size_t masterRank;
 };
 
 struct jit_snippets_compile_args {
