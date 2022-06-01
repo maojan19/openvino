@@ -16,7 +16,7 @@ jit_container_emitter::jit_container_emitter(dnnl::impl::cpu::x64::jit_generator
     in_out_type_ = emitter_in_out_map::gpr_to_gpr;
 }
 
-std::vector<EmitterCode> jit_container_emitter::get_nested_code() {
+std::vector<AllocatedEmitter> jit_container_emitter::get_nested_code() {
     return body;
 }
 
@@ -203,7 +203,7 @@ void TileSchedulerEmitter::emit_tiles(const Reg64& reg_inner_amount, size_t vect
     const size_t inner_work_amount = jcp.scheduler_dims[1];
 
     auto process_tile =
-        [&](const bool evaluate_once, const std::vector<EmitterCode>& body, const EmitterCode& tile) {
+        [&](const bool evaluate_once, const std::vector<AllocatedEmitter>& body, const AllocatedEmitter& tile) {
             // If Tile is evaluated only once, then we can emit its body directly and skip work_amount decrements and checks
             if (evaluate_once) {
                 for (auto& code : body)

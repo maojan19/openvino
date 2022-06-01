@@ -10,11 +10,11 @@
 #include "jit_emitter.hpp"
 
 using namespace Xbyak;
+using ngraph::snippets::AllocatedEmitter;
 
 namespace ov {
 namespace intel_cpu {
 
-using EmitterCode = std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo>;
 
 #define SNIPPETS_MAX_SNIPPETS_DIMS 12
 #define SNIPPETS_MAX_HARNESS_DIMS 5
@@ -40,13 +40,13 @@ class jit_container_emitter: public jit_emitter {
 public:
     jit_container_emitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
                           const std::shared_ptr<ov::Node>& n);
-    std::vector<EmitterCode> get_nested_code();
+    std::vector<AllocatedEmitter> get_nested_code();
 protected:
     // maps gpr and vec abstract registers to physical ones. Physical reg indexes are taken from the provided pools
     // (the first 2 args). All the used gpr and vec registers are also stored in the provided sets (the second 2 args).
     void map_abstract_registers(const std::vector<size_t>&,  const std::vector<size_t>&,
                                 std::set<size_t>&, std::set<size_t>&);
-    std::vector<EmitterCode> body;
+    std::vector<AllocatedEmitter> body;
 };
 ///
 /// \brief    Kernel is the only entry point to Codogen Jit compilation. Kernel perform abstract-to-physical register

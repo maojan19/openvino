@@ -23,11 +23,10 @@ class TileScheduler : public ngraph::op::Op {
 public:
     OPENVINO_OP("TileScheduler", "SnippetsOpset");
 
-    TileScheduler(const std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo> &vector_region,
-                  const std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo> &scalar_region);
+    TileScheduler(const AllocatedEmitter& vector_region, const AllocatedEmitter& scalar_region);
     TileScheduler() = default;
-    std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo> vector_region;
-    std::pair<std::shared_ptr<ngraph::snippets::Emitter>, ngraph::snippets::RegInfo> scalar_region;
+    AllocatedEmitter vector_region;
+    AllocatedEmitter scalar_region;
     // todo: this clone_with_new_inputs is irrelevant
     std::shared_ptr<Node> clone_with_new_inputs(const OutputVector& inputs) const override {
         return std::make_shared<TileScheduler>(vector_region, scalar_region);
