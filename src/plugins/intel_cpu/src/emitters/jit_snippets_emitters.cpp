@@ -171,32 +171,9 @@ void TileSchedulerEmitter::validate_arguments(const std::vector<size_t> &in,
     if (!(std::dynamic_pointer_cast<TileEmitter>(body[0].first) && std::dynamic_pointer_cast<TileEmitter>(body[1].first)))
         IE_THROW() << "TileSchedulerEmitter can contain only TileEmitters inside its body";
 }
-
-void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
-                                     const std::vector<size_t>& out,
-                                     const std::vector<size_t>& vec_pool,
-                                     const std::vector<size_t>& gpr_pool,
-                                     const ov::intel_cpu::emitter_context *emit_context) const {
-    const size_t num_inputs = in[0];
-    const size_t num_outputs = in[1];
-    const size_t vector_size = in[2];
-    const size_t num_params = num_inputs + num_outputs;
-    const size_t outer_work_amount = jcp.scheduler_dims[0];
-    const size_t inner_work_amount = jcp.scheduler_dims[1];
+void TileSchedulerEmitter::init_data_pointers(size_t num_inputs, size_t num_params,
+                                                    const Reg64& reg_indexes, const Reg64& reg_const_params, const std::vector<Reg64>& data_ptr_regs) const {
     const int64_t harness_num_dims = jcp.output_dims.size() - 1;
-
-    const auto& vector_tile = body[0];
-    const auto& scalar_tile = body[1];
-    const auto& vector_tile_body = std::dynamic_pointer_cast<TileEmitter>(vector_tile.first)->get_nested_code();
-    const auto& scalar_tile_body = std::dynamic_pointer_cast<TileEmitter>(scalar_tile.first)->get_nested_code();
-
-    // remove data ptr regs from the pool, since they should be preserved
-    const auto& data_ptr_reg_idxs(out);
-
-    // It is critical that reg_indexes and reg_const_params represent the
-    // first two runtime arguments, since they are used to calculate offsets
-    Reg64 reg_indexes = Reg64(static_cast<int>(in[3]));
-    Reg64 reg_const_params = Reg64(static_cast<int>(in[4]));
     auto init_ptrs_with_offsets = [&](Reg64 pointer, const int64_t *offsets, Reg64 reg_tmp) {
         for (int j = 0; j < harness_num_dims; j++) {
             if (jcp.output_dims[j] != 1 && offsets[j] != 0) {
@@ -206,25 +183,27 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
             }
         }
     };
-    std::vector<Reg64> data_ptr_regs(num_params);
     for (auto i = 0; i < num_params; i++) {
-        data_ptr_regs[i] = Reg64(static_cast<int>(data_ptr_reg_idxs[i]));
         if (i < num_inputs)
             h->mov(data_ptr_regs[i], h->ptr[reg_const_params + GET_OFF(src_ptrs) + i * sizeof(void*)]);
         else
             h->mov(data_ptr_regs[i], h->ptr[reg_const_params + GET_OFF(dst_ptrs) + (i - num_inputs) * sizeof(void*)]);
         // we can use the last data_ptr_reg as tmp_reg until the last iteration, and reg_const_params then
-        Reg64 reg_tmp = i < num_params-1 ? Reg64(static_cast<int>(data_ptr_reg_idxs.back())) : reg_const_params;
+        Reg64 reg_tmp = i < num_params-1 ? data_ptr_regs.back() : reg_const_params;
         init_ptrs_with_offsets(data_ptr_regs[i], &jcp.data_offsets[i * harness_num_dims], reg_tmp);
     }
+}
 
-    // We don't need runtime args, since the data_ptrs are already initialized,
-    // So let's reuse reg_indexes and reg_const_params to store work amounts
-    Reg64 reg_outer_amount = reg_indexes;
-    Reg64 reg_inner_amount = reg_const_params;
-    auto emit_tiles = [&]() {
-        auto process_tile =
-                [&](const bool evaluate_once, const std::vector<EmitterCode>& body, const EmitterCode& tile) {
+void TileSchedulerEmitter::emit_tiles(const Reg64& reg_inner_amount, size_t vector_size,
+                                      const std::vector<size_t>& vec_pool, const std::vector<size_t>& gpr_pool) const {
+    const auto& vector_tile = body[0];
+    const auto& scalar_tile = body[1];
+    const auto& vector_tile_body = std::dynamic_pointer_cast<TileEmitter>(vector_tile.first)->get_nested_code();
+    const auto& scalar_tile_body = std::dynamic_pointer_cast<TileEmitter>(scalar_tile.first)->get_nested_code();
+    const size_t inner_work_amount = jcp.scheduler_dims[1];
+
+    auto process_tile =
+        [&](const bool evaluate_once, const std::vector<EmitterCode>& body, const EmitterCode& tile) {
             // If Tile is evaluated only once, then we can emit its body directly and skip work_amount decrements and checks
             if (evaluate_once) {
                 for (auto& code : body)
@@ -237,39 +216,63 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
                 tile.first->emit_code(in_regs, out_regs, vec_pool, gpr_pool);
             }
         };
-        bool vector_evaluate_once = false;
-        if (inner_work_amount >= vector_size) {
-            vector_evaluate_once = inner_work_amount < 2 * vector_size;
-            // Need to set proper work amount for inner tiles if evaluated multiple times
-            if (!vector_evaluate_once)
+    bool vector_evaluate_once = false;
+    if (inner_work_amount >= vector_size) {
+        vector_evaluate_once = inner_work_amount < 2 * vector_size;
+        // Need to set proper work amount for inner tiles if evaluated multiple times
+        if (!vector_evaluate_once)
+            h->mov(reg_inner_amount, inner_work_amount);
+        process_tile(vector_evaluate_once, vector_tile_body, vector_tile);
+    }
+    if (inner_work_amount % vector_size >= 1) {
+        bool scalar_evaluate_once = inner_work_amount % vector_size < 2;
+        if (!scalar_evaluate_once) {
+            // vector_tile is not executed, work_amount is not set
+            if (inner_work_amount < vector_size)
                 h->mov(reg_inner_amount, inner_work_amount);
-            process_tile(vector_evaluate_once, vector_tile_body, vector_tile);
+            // vector_tile is executed, but work_amount is neither set nor decremented appropriately.
+            else if (vector_evaluate_once)
+                h->mov(reg_inner_amount, inner_work_amount - vector_size);
+            // else: vector_tile is executed multiple times, so work_amount is already set
         }
-        if (inner_work_amount % vector_size >= 1) {
-            bool scalar_evaluate_once = inner_work_amount % vector_size < 2;
-            if (!scalar_evaluate_once) {
-                // vector_tile is not executed, work_amount is not set
-                if (inner_work_amount < vector_size)
-                    h->mov(reg_inner_amount, inner_work_amount);
-                // vector_tile is executed, but work_amount is neither set nor decremented appropriately.
-                else if (vector_evaluate_once)
-                    h->mov(reg_inner_amount, inner_work_amount - vector_size);
-                // else: vector_tile is executed multiple times, so work_amount is already set
-            }
-            process_tile(scalar_evaluate_once, scalar_tile_body, scalar_tile);
-        }
-    };
-    Label for_body;
+        process_tile(scalar_evaluate_once, scalar_tile_body, scalar_tile);
+    }
+}
 
+void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
+                                     const std::vector<size_t>& out,
+                                     const std::vector<size_t>& vec_pool,
+                                     const std::vector<size_t>& gpr_pool,
+                                     const ov::intel_cpu::emitter_context *emit_context) const {
+    const size_t num_inputs = in[0];
+    const size_t num_outputs = in[1];
+    const size_t vector_size = in[2];
+    const size_t num_params = num_inputs + num_outputs;
+    const auto& data_ptr_reg_idxs(out);
+    std::vector<Reg64> data_ptr_regs(num_params);
+    for (auto i = 0; i < num_params; i++)
+        data_ptr_regs[i] = Reg64(static_cast<int>(data_ptr_reg_idxs[i]));
+
+    // It is critical that reg_indexes and reg_const_params represent the
+    // first two runtime arguments, since they are used to calculate offsets
+    Reg64 reg_indexes = Reg64(static_cast<int>(in[3]));
+    Reg64 reg_const_params = Reg64(static_cast<int>(in[4]));
+    init_data_pointers(num_inputs, num_params, reg_indexes, reg_const_params, data_ptr_regs);
+    // We don't need runtime args, since the data_ptrs are already initialized,
+    // So let's reuse reg_indexes and reg_const_params to store work amounts
+    Reg64 reg_outer_amount = reg_indexes;
+    Reg64 reg_inner_amount = reg_const_params;
+    Label for_body;
+    const size_t outer_work_amount = jcp.scheduler_dims[0];
     if (outer_work_amount == 1) {
         // emit code directly without looping over external dim
-        emit_tiles();
+        emit_tiles(reg_inner_amount, vector_size, vec_pool, gpr_pool);
     } else if (outer_work_amount > 1) {
         // We need to create a Loop in this case
         h->mov(reg_outer_amount, outer_work_amount);
         h->L(for_body);
         {
-            emit_tiles();
+            emit_tiles(reg_inner_amount, vector_size, vec_pool, gpr_pool);
 
             // Todo: Load and Store emitters are currently implemented so they ALWAYS increment appropriate pointers
             //   after reading/writing. This might be a problem if we need to read the same data multiple times (broadcasting shapes).

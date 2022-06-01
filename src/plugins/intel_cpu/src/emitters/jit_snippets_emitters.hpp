@@ -121,6 +121,9 @@ private:
                    const std::vector<size_t>& gpr,
                    const ov::intel_cpu::emitter_context *emit_context) const override;
 
+    void emit_tiles(const Reg64&, size_t, const std::vector<size_t>& , const std::vector<size_t>&) const;
+    void init_data_pointers(size_t, size_t, const Reg64&, const Reg64&, const std::vector<Reg64>&) const;
+
     jit_snippets_compile_args jcp;
 };
 
