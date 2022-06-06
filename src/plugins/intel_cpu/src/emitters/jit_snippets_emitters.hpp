@@ -123,7 +123,7 @@ private:
                    const std::vector<size_t>& gpr,
                    const ov::intel_cpu::emitter_context *emit_context) const override;
 
-    void emit_tiles(const Reg64&, size_t, const std::vector<size_t>& , const std::vector<size_t>&) const;
+    void emit_tiles(const Reg64&, const std::vector<Reg64>&, size_t, const std::vector<size_t>& , const std::vector<size_t>&) const;
 
     jit_snippets_compile_args jcp;
 };
@@ -155,6 +155,10 @@ private:
                    const std::vector<size_t>& pool,
                    const std::vector<size_t>& gpr,
                    const ov::intel_cpu::emitter_context *emit_context) const override;
+
+    size_t num_inputs = 0;
+    size_t num_outputs = 0;
+    std::vector<size_t> io_dims {};
 };
 
 class NopEmitter : public jit_emitter {
