@@ -207,7 +207,7 @@ void TileSchedulerEmitter::validate_arguments(const std::vector<size_t> &in,
         IE_THROW() << "TileSchedulerEmitter can contain only TileEmitters inside its body";
 }
 
-void TileSchedulerEmitter::emit_tiles(const Reg64& reg_inner_amount, size_t vector_size,
+void TileSchedulerEmitter::emit_tiles(const Reg64& reg_inner_amount, const std::vector<Reg64>& data_ptr_regs, size_t vector_size,
                                       const std::vector<size_t>& vec_pool, const std::vector<size_t>& gpr_pool) const {
     const auto& vector_tile = body[0];
     const auto& scalar_tile = body[1];
@@ -226,30 +226,37 @@ void TileSchedulerEmitter::emit_tiles(const Reg64& reg_inner_amount, size_t vect
                 std::tie(in_regs, out_regs) = tile.second;
                 // pass work_amount reg to Tile
                 in_regs.push_back(static_cast<size_t>(reg_inner_amount.getIdx()));
+                for (const auto& reg : data_ptr_regs)
+                    out_regs.emplace_back(reg.getIdx());
                 tile.first->emit_code(in_regs, out_regs, vec_pool, gpr_pool);
             }
         };
-    bool vector_evaluate_once = false;
-    if (inner_work_amount >= vector_size) {
-        vector_evaluate_once = inner_work_amount < 2 * vector_size;
-        // Need to set proper work amount for inner tiles if evaluated multiple times
-        if (!vector_evaluate_once)
-            h->mov(reg_inner_amount, inner_work_amount);
-        process_tile(vector_evaluate_once, vector_tile_body, vector_tile);
-    }
-    if (inner_work_amount % vector_size >= 1) {
-        bool scalar_evaluate_once = inner_work_amount % vector_size < 2;
-        if (!scalar_evaluate_once) {
-            // vector_tile is not executed, work_amount is not set
-            if (inner_work_amount < vector_size)
-                h->mov(reg_inner_amount, inner_work_amount);
-            // vector_tile is executed, but work_amount is neither set nor decremented appropriately.
-            else if (vector_evaluate_once)
-                h->mov(reg_inner_amount, inner_work_amount - vector_size);
-            // else: vector_tile is executed multiple times, so work_amount is already set
-        }
-        process_tile(scalar_evaluate_once, scalar_tile_body, scalar_tile);
-    }
+    // without any optimizations
+    h->mov(reg_inner_amount, inner_work_amount);
+    process_tile(false, vector_tile_body, vector_tile);
+    process_tile(false, scalar_tile_body, scalar_tile);
+    //
+//    bool vector_evaluate_once = false;
+//    if (inner_work_amount >= vector_size) {
+//        vector_evaluate_once = inner_work_amount < 2 * vector_size;
+//        // Need to set proper work amount for inner tiles if evaluated multiple times
+//        if (!vector_evaluate_once)
+//            h->mov(reg_inner_amount, inner_work_amount);
+//        process_tile(vector_evaluate_once, vector_tile_body, vector_tile);
+//    }
+//    if (inner_work_amount % vector_size >= 1) {
+//        bool scalar_evaluate_once = inner_work_amount % vector_size < 2;
+//        if (!scalar_evaluate_once) {
+//            // vector_tile is not executed, work_amount is not set
+//            if (inner_work_amount < vector_size)
+//                h->mov(reg_inner_amount, inner_work_amount);
+//            // vector_tile is executed, but work_amount is neither set nor decremented appropriately.
+//            else if (vector_evaluate_once)
+//                h->mov(reg_inner_amount, inner_work_amount - vector_size);
+//            // else: vector_tile is executed multiple times, so work_amount is already set
+//        }
+//        process_tile(scalar_evaluate_once, scalar_tile_body, scalar_tile);
+//    }
 }
 
 void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
@@ -276,13 +283,13 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
     const size_t outer_work_amount = jcp.scheduler_dims[0];
     if (outer_work_amount == 1) {
         // emit code directly without looping over external dim
-        emit_tiles(reg_inner_amount, vector_size, vec_pool, local_gpr_pool);
+        emit_tiles(reg_inner_amount, data_ptr_regs, vector_size, vec_pool, local_gpr_pool);
     } else if (outer_work_amount > 1) {
         // We need to create a Loop in this case
         h->mov(reg_outer_amount, outer_work_amount);
         h->L(for_body);
         {
-            emit_tiles(reg_inner_amount, vector_size, vec_pool, local_gpr_pool);
+            emit_tiles(reg_inner_amount, data_ptr_regs, vector_size, vec_pool, local_gpr_pool);
 
             // Todo: Load and Store emitters are currently implemented so they ALWAYS increment appropriate pointers
             //   after reading/writing. This might be a problem if we need to read the same data multiple times (broadcasting shapes).
@@ -310,6 +317,13 @@ TileEmitter::TileEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu
     if (!tile)
         IE_THROW() << "TileEmitter invoked with invalid op argument";
     body = tile->region;
+    if (body.empty())
+        IE_THROW() << "TileEmitter is invoked with empty body";
+    num_inputs = tile->num_inputs;
+    num_outputs = tile->num_outputs;
+    io_dims = tile->io_dims;
+    if (io_dims.size() != num_inputs + num_outputs)
+        IE_THROW() << "TileEmitter constructor got inconsistent arguments. Check num_inputs + num_outputs == io_dims.size()";
 }
 
 void TileEmitter::emit_code(const std::vector<size_t> &in,
@@ -326,8 +340,8 @@ void TileEmitter::validate_arguments(const std::vector<size_t> &in,
                                      const std::vector<size_t> &gpr) const {
     if (in.size() != 2)
         IE_THROW() << "TileEmitter got invalid number of inputs. Expected 2, got " << in.size();
-    if (!out.empty())
-        IE_THROW() << "TileEmitter got invalid number of outputs. Expected 0" << " , got " << out.size();
+    if (out.size() != io_dims.size())
+        IE_THROW() << "TileEmitter got invalid number of outputs. Expected " << io_dims.size() << " , got " << out.size();
 }
 
 void TileEmitter::emit_impl(const std::vector<size_t>& in,
@@ -337,8 +351,12 @@ void TileEmitter::emit_impl(const std::vector<size_t>& in,
                             const ov::intel_cpu::emitter_context *emit_context) const {
     const size_t inc = in[0];
     Reg64 work_amount = Reg64(static_cast<int>(in[1]));
-    Label for_body;
-
+    std::vector<Reg64> data_ptr_regs(out.size());
+    std::transform(out.begin(), out.end(), data_ptr_regs.begin(), [](size_t idx){return Reg64(static_cast<int>(idx));});
+//    Label for_body;
+    Label for_body, for_loop_end;
+    h->cmp(work_amount, inc);
+    h->jl(for_loop_end, CodeGenerator::T_NEAR);
     // Note that:
     // * Work amount must be set by TileScheduler that executes Tiles
     // * TileScheduler executes Tile only if it has to perform >= 1 iterations
@@ -346,10 +364,20 @@ void TileEmitter::emit_impl(const std::vector<size_t>& in,
     {
         for (auto& code : body)
             code.first->emit_code(code.second.first, code.second.second, vec_pool, gpr_pool);
+        // perform memptr increments here
+        for (size_t i = 0; i < num_inputs; i++) {
+            // those with dims == 1 will be broadcasted, hence don't require increment
+            if (io_dims[i] != 1)
+                h->add(data_ptr_regs[i], inc * sizeof(float));
+        }
+        for (size_t i = num_inputs; i < num_inputs + num_outputs; i++)
+            h->add(data_ptr_regs[i], inc * sizeof(float));
+        //
         h->sub(work_amount, inc);
         h->cmp(work_amount, inc);
         h->jge(for_body, CodeGenerator::T_NEAR);
     }
+    h->L(for_loop_end);
 }
 
 FakeBroadcastEmitter::FakeBroadcastEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
@@ -459,7 +487,7 @@ void StoreEmitter::emit_isa(const std::vector<size_t> &in, const std::vector<siz
     Reg64 out_reg(static_cast<int>(out[0]));
     Vmm vmm_src0 = Vmm(in[0]);
     h->uni_vmovups(h->ptr[out_reg], vmm_src0);
-    h->add(out_reg, dnnl::impl::cpu::x64::cpu_isa_traits<isa>::vlen);
+//    h->add(out_reg, dnnl::impl::cpu::x64::cpu_isa_traits<isa>::vlen);
 }
 
 ScalarStoreEmitter::ScalarStoreEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
@@ -491,12 +519,13 @@ void ScalarStoreEmitter::emit_isa(const std::vector<size_t> &in, const std::vect
     Reg64 out_reg(static_cast<int>(out[0]));
     Xmm vmm_src0 = Xmm(in[0]);
     h->uni_vmovss(h->ptr[out_reg], vmm_src0);
-    h->add(out_reg, sizeof(float));
+//    h->add(out_reg, sizeof(float));
 }
 
 LoadEmitter::LoadEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
                          const std::shared_ptr<ov::Node>& n)
                          : MemoryEmitter(h, isa, n), shouldPostIncrement(*n->get_input_shape(0).rbegin() != 1) {
+    shouldPostIncrement = false;
     in_out_type_ = emitter_in_out_map::gpr_to_vec;
 }
 
@@ -568,6 +597,7 @@ void BroadcastLoadEmitter::emit_isa(const std::vector<size_t> &in, const std::ve
 ScalarLoadEmitter::ScalarLoadEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
                                      const std::shared_ptr<ov::Node>& n)
                                     : MemoryEmitter(h, isa, n), shouldPostIncrement(*n->get_input_shape(0).rbegin() != 1) {
+    shouldPostIncrement = false;
     in_out_type_ = emitter_in_out_map::gpr_to_vec;
 }
 

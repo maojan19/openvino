@@ -23,6 +23,9 @@ public:
     Tile(const std::vector<AllocatedEmitter>& region);
     Tile() = default;
     std::vector<AllocatedEmitter> region;
+    size_t num_inputs = 0;
+    size_t num_outputs = 0;
+    std::vector<size_t> io_dims {};
 
     std::shared_ptr<Node> clone_with_new_inputs(const OutputVector& inputs) const override {
         return std::make_shared<Tile>(region);
