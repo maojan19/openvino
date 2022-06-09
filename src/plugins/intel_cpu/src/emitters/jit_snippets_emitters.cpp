@@ -79,7 +79,12 @@ KernelEmitter::KernelEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl:
     const auto kernel = ov::as_type_ptr<ngraph::snippets::op::Kernel>(n);
     if (!kernel)
         IE_THROW() << "KernelEmitter invoked with invalid op argument";
+    if (kernel->region.empty())
+        IE_THROW() << "KernelEmitter invoked with empty body";
     body = kernel->region;
+    if (!kernel->compile_params)
+        IE_THROW() << "KernelEmitter invoked without compile_params";
+    jcp = *reinterpret_cast<const jit_snippets_compile_args*>(kernel->compile_params);
     // Initialize pools of gp and vec registers
     gp_regs_pool.resize(16);
     vec_regs_pool.resize(16);
@@ -115,28 +120,62 @@ void KernelEmitter::validate_arguments(const std::vector<size_t> &in,
                                        const std::vector<size_t> &out,
                                        const std::vector<size_t> &pool,
                                        const std::vector<size_t> &gpr) const {
-    if (!in.empty())
-        IE_THROW() << "KernelEmitter got invalid number of inputs. Expected 0, got " << in.size();
+    if (in.size() != 2)
+        IE_THROW() << "KernelEmitter got invalid number of inputs. Expected 2, got " << in.size();
     if (!out.empty())
         IE_THROW() << "KKernelEmitter got invalid number of outputs. Expected 0, got " << out.size();
 }
 
+void KernelEmitter::init_data_pointers(size_t num_inputs, size_t num_params,
+                                              const Reg64& reg_indexes, const Reg64& reg_const_params, const std::vector<Reg64>& data_ptr_regs) const {
+    const int64_t harness_num_dims = jcp.output_dims.size() - 1;
+    auto init_ptrs_with_offsets = [&](Reg64 pointer, const int64_t *offsets, Reg64 reg_tmp) {
+        for (int j = 0; j < harness_num_dims; j++) {
+            if (jcp.output_dims[j] != 1 && offsets[j] != 0) {
+                h->mov(reg_tmp, offsets[j]);
+                h->imul(reg_tmp, h->ptr[reg_indexes + j * sizeof(size_t)]);
+                h->add(pointer, reg_tmp);
+            }
+        }
+    };
+    for (auto i = 0; i < num_params; i++) {
+        if (i < num_inputs)
+            h->mov(data_ptr_regs[i], h->ptr[reg_const_params + GET_OFF(src_ptrs) + i * sizeof(void*)]);
+        else
+            h->mov(data_ptr_regs[i], h->ptr[reg_const_params + GET_OFF(dst_ptrs) + (i - num_inputs) * sizeof(void*)]);
+        // we can use the last data_ptr_reg as tmp_reg until the last iteration, and reg_const_params then
+        Reg64 reg_tmp = i < num_params-1 ? data_ptr_regs.back() : reg_const_params;
+        init_ptrs_with_offsets(data_ptr_regs[i], &jcp.data_offsets[i * harness_num_dims], reg_tmp);
+    }
+}
 void KernelEmitter::emit_impl(const std::vector<size_t>& in,
                               const std::vector<size_t>& out,
                               const std::vector<size_t>& allocated_vec_regs,
                               const std::vector<size_t>& allocated_gp_regs,
                               const ov::intel_cpu::emitter_context *emit_context) const {
     h->preamble();
+
+    const size_t num_inputs = in[0];
+    const size_t num_outputs = in[1];
+
+    Reg64 reg_indexes = Reg64(dnnl::impl::cpu::x64::abi_param1.getIdx());
+    Reg64 reg_const_params = Reg64(dnnl::impl::cpu::x64::abi_param2.getIdx());
+    std::vector<Reg64> data_ptr_regs(gp_regs_used.size());
+    std::transform(gp_regs_used.begin(), gp_regs_used.end(), data_ptr_regs.begin(), [](size_t idx){return Reg64(static_cast<int>(idx));});
+
+    init_data_pointers(num_inputs, num_inputs + num_outputs, reg_indexes, reg_const_params, data_ptr_regs);
+    // todo: emit_impl is a const method, so we can't just push_back unused regs to the gp_regs_pool.
+    //  we need a more elegant approach to avoid a full copy here
+    auto local_gpr_pool = gp_regs_pool;
+    local_gpr_pool.push_back(static_cast<size_t>(reg_indexes.getIdx()));
+    local_gpr_pool.push_back(static_cast<size_t>(reg_const_params.getIdx()));
     for (const auto& c : body) {
         const auto& emitter = c.first;
         std::vector<size_t> in_regs, out_regs;
         std::tie(in_regs, out_regs) = c.second;
-        if (auto tile_scheduler = std::dynamic_pointer_cast<TileSchedulerEmitter>(emitter)) {
-            in_regs.push_back(static_cast<size_t>(dnnl::impl::cpu::x64::abi_param1.getIdx()));
-            in_regs.push_back(static_cast<size_t>(dnnl::impl::cpu::x64::abi_param2.getIdx()));
+        if (auto tile_scheduler = std::dynamic_pointer_cast<TileSchedulerEmitter>(emitter))
             out_regs = gp_regs_used;
-        }
-        emitter->emit_code(in_regs, out_regs, vec_regs_pool, gp_regs_pool);
+        emitter->emit_code(in_regs, out_regs, vec_regs_pool, local_gpr_pool);
     }
     h->postamble();
 }
@@ -162,36 +201,14 @@ void TileSchedulerEmitter::validate_arguments(const std::vector<size_t> &in,
                                      const std::vector<size_t> &out,
                                      const std::vector<size_t> &pool,
                                      const std::vector<size_t> &gpr) const {
-    if (in.size() != 5)
-        IE_THROW() << "TileSchedulerEmitter got invalid number of inputs. Expected 5, got " << in.size();
+    if (in.size() != 3)
+        IE_THROW() << "TileSchedulerEmitter got invalid number of inputs. Expected 3, got " << in.size();
     if (out.size() != in[0] + in[1])
         IE_THROW() << "TileSchedulerEmitter got invalid number of outputs. Expected " << in[0] + in[1] << " , got " << out.size();
     if (body.size() != 2)
         IE_THROW() << "TileSchedulerEmitter got invalid body size, expected 2 (vector & scalar TileEmitter), got " << body.size();
     if (!(std::dynamic_pointer_cast<TileEmitter>(body[0].first) && std::dynamic_pointer_cast<TileEmitter>(body[1].first)))
         IE_THROW() << "TileSchedulerEmitter can contain only TileEmitters inside its body";
-}
-void TileSchedulerEmitter::init_data_pointers(size_t num_inputs, size_t num_params,
-                                                    const Reg64& reg_indexes, const Reg64& reg_const_params, const std::vector<Reg64>& data_ptr_regs) const {
-    const int64_t harness_num_dims = jcp.output_dims.size() - 1;
-    auto init_ptrs_with_offsets = [&](Reg64 pointer, const int64_t *offsets, Reg64 reg_tmp) {
-        for (int j = 0; j < harness_num_dims; j++) {
-            if (jcp.output_dims[j] != 1 && offsets[j] != 0) {
-                h->mov(reg_tmp, offsets[j]);
-                h->imul(reg_tmp, h->ptr[reg_indexes + j * sizeof(size_t)]);
-                h->add(pointer, reg_tmp);
-            }
-        }
-    };
-    for (auto i = 0; i < num_params; i++) {
-        if (i < num_inputs)
-            h->mov(data_ptr_regs[i], h->ptr[reg_const_params + GET_OFF(src_ptrs) + i * sizeof(void*)]);
-        else
-            h->mov(data_ptr_regs[i], h->ptr[reg_const_params + GET_OFF(dst_ptrs) + (i - num_inputs) * sizeof(void*)]);
-        // we can use the last data_ptr_reg as tmp_reg until the last iteration, and reg_const_params then
-        Reg64 reg_tmp = i < num_params-1 ? data_ptr_regs.back() : reg_const_params;
-        init_ptrs_with_offsets(data_ptr_regs[i], &jcp.data_offsets[i * harness_num_dims], reg_tmp);
-    }
 }
 
 void TileSchedulerEmitter::emit_tiles(const Reg64& reg_inner_amount, size_t vector_size,
@@ -249,30 +266,27 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
     const size_t vector_size = in[2];
     const size_t num_params = num_inputs + num_outputs;
     const auto& data_ptr_reg_idxs(out);
-    std::vector<Reg64> data_ptr_regs(num_params);
-    for (auto i = 0; i < num_params; i++)
-        data_ptr_regs[i] = Reg64(static_cast<int>(data_ptr_reg_idxs[i]));
+    std::vector<Reg64> data_ptr_regs(data_ptr_reg_idxs.size());
+    std::transform(data_ptr_reg_idxs.begin(), data_ptr_reg_idxs.end(), data_ptr_regs.begin(), [](size_t idx){return Reg64(static_cast<int>(idx));});
 
-    // It is critical that reg_indexes and reg_const_params represent the
-    // first two runtime arguments, since they are used to calculate offsets
-    Reg64 reg_indexes = Reg64(static_cast<int>(in[3]));
-    Reg64 reg_const_params = Reg64(static_cast<int>(in[4]));
-    init_data_pointers(num_inputs, num_params, reg_indexes, reg_const_params, data_ptr_regs);
-    // We don't need runtime args, since the data_ptrs are already initialized,
-    // So let's reuse reg_indexes and reg_const_params to store work amounts
-    Reg64 reg_outer_amount = reg_indexes;
-    Reg64 reg_inner_amount = reg_const_params;
+    // todo: emit_impl has const input args, so we can't just pop_back necessary regs from gpr_pool.
+    //  we need a more elegant approach to avoid a full copy here. Similar problem is demonstrated in KernelEmitter
+    auto local_gpr_pool = gpr_pool;
+    Reg64 reg_outer_amount = Reg64(static_cast<int>(local_gpr_pool.back()));
+    local_gpr_pool.pop_back();
+    Reg64 reg_inner_amount = Reg64(static_cast<int>(local_gpr_pool.back()));
+    local_gpr_pool.pop_back();
     Label for_body;
     const size_t outer_work_amount = jcp.scheduler_dims[0];
     if (outer_work_amount == 1) {
         // emit code directly without looping over external dim
-        emit_tiles(reg_inner_amount, vector_size, vec_pool, gpr_pool);
+        emit_tiles(reg_inner_amount, vector_size, vec_pool, local_gpr_pool);
     } else if (outer_work_amount > 1) {
         // We need to create a Loop in this case
         h->mov(reg_outer_amount, outer_work_amount);
         h->L(for_body);
         {
-            emit_tiles(reg_inner_amount, vector_size, vec_pool, gpr_pool);
+            emit_tiles(reg_inner_amount, vector_size, vec_pool, local_gpr_pool);
 
             // Todo: Load and Store emitters are currently implemented so they ALWAYS increment appropriate pointers
             //   after reading/writing. This might be a problem if we need to read the same data multiple times (broadcasting shapes).
