@@ -23,6 +23,7 @@ public:
     Tile(const std::vector<AllocatedEmitter>& region);
     Tile() = default;
     std::vector<AllocatedEmitter> region;
+    size_t increment = 0;
     size_t num_inputs = 0;
     size_t num_outputs = 0;
     std::vector<size_t> io_dims {};

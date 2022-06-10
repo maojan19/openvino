@@ -145,6 +145,10 @@ public:
                    const std::vector<size_t> &out,
                    const std::vector<size_t> &pool,
                    const std::vector<size_t> &gpr) const override;
+
+    void emit_body(const std::vector<size_t>& vec_pool, const std::vector<size_t>& gpr_pool) const;
+    void emit_ptr_increments(const std::vector<Reg64>& data_ptr_regs) const;
+
 private:
     void validate_arguments(const std::vector<size_t> &in,
                             const std::vector<size_t> &out,
@@ -159,6 +163,7 @@ private:
     size_t num_inputs = 0;
     size_t num_outputs = 0;
     std::vector<size_t> io_dims {};
+    size_t increment = 0;
 };
 
 class NopEmitter : public jit_emitter {
@@ -288,9 +293,6 @@ private:
 
     template <dnnl::impl::cpu::x64::cpu_isa_t isa>
     void emit_isa(const std::vector<size_t> &in, const std::vector<size_t> &out) const;
-
-private:
-    bool shouldPostIncrement;
 };
 
 class BroadcastLoadEmitter : public MemoryEmitter {
@@ -324,9 +326,6 @@ private:
 
     template <dnnl::impl::cpu::x64::cpu_isa_t isa>
     void emit_isa(const std::vector<size_t> &in, const std::vector<size_t> &out) const;
-
-private:
-    bool shouldPostIncrement;
 };
 }   // namespace intel_cpu
 }   // namespace ov
