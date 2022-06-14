@@ -146,7 +146,7 @@ bool ngraph::snippets::pass::AssignRegisters::run_on_model(const std::shared_ptr
         /* The main idea here is that each operation stores its output regs in rt["reginfo"]. Input and output regs are
          * then derived by parsing node's and parent's rt["reginfo"], look into ngraph::snippets::getRegisters for details.
          * Note also that Parameter and Result store general-purpose register index, because they work with memory
-         * (memory pointer is stored in grp). All other "regular" ops store vector regs indexes, since calculations are
+         * (memory pointer is stored in gpr). All other "regular" ops store vector regs indexes, since calculations are
          * performed on registers.
          */
         if (is_type<ov::op::v0::Result>(n)) {

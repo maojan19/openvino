@@ -29,13 +29,14 @@ protected:
     std::shared_ptr<ov::Model> initOriginal() const override;
     std::shared_ptr<ov::Model> initReference() const override;
 };
-/// Add separated from inputs by Sin to WA CPU-specific disabling after inputs.
+/// Add separated from inputs by Sinh to WA CPU-specific disabling after inputs.
 /// Works because Sinh is not supported by tokenization yet.
 /// Tokenized simply by starting subgraph.
 //   in1       in2
-//   Sin       Sinh
+//   Sinh       Sinh
 //        Add
 //      Result
+// todo: remove Sinh once "no subgraph after input" limitation is relaxed
 class AddSinhFunction : public SnippetsFunctionBase {
 public:
     explicit AddSinhFunction(const std::vector<Shape>& inputShapes) : SnippetsFunctionBase(inputShapes) {
@@ -50,6 +51,7 @@ protected:
 //   Sin       Sinh
 //        Add
 //      Result
+// todo: remove Sinh once "no subgraph after input" limitation is relaxed
 class AddSinhConstFunction : public SnippetsFunctionBase {
 public:
     explicit AddSinhConstFunction(const std::vector<Shape>& inputShapes) : SnippetsFunctionBase(inputShapes) {
@@ -91,6 +93,7 @@ protected:
 };
 /// EltwiseFunctionThreeInputs with Sinh after inputs to to WA CPU-specific disabling after inputs
 /// See AddSinh for details.
+// todo: remove Sinh once "no subgraph after input" limitation is relaxed
 class EltwiseThreeInputsSinhFunction : public SnippetsFunctionBase {
 public:
     explicit EltwiseThreeInputsSinhFunction(const std::vector<Shape>& inputShapes) :
@@ -108,6 +111,7 @@ protected:
 //    Subtract    Power
 //          \   Sinh
 //          Result
+// todo: remove Sinh once "no subgraph after input" limitation is relaxed
 class EltwiseMaxNumParamsSinhFunction : public SnippetsFunctionBase {
 public:
     explicit EltwiseMaxNumParamsSinhFunction(const std::vector<Shape>& inputShapes) :

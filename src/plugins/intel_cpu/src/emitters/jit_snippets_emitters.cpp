@@ -16,10 +16,6 @@ jit_container_emitter::jit_container_emitter(dnnl::impl::cpu::x64::jit_generator
     in_out_type_ = emitter_in_out_map::gpr_to_gpr;
 }
 
-std::vector<AllocatedEmitter> jit_container_emitter::get_nested_code() {
-    return body;
-}
-
 void jit_container_emitter::map_abstract_registers(const std::vector<size_t> &vec_pool,  const std::vector<size_t> &gpr_pool,
                                                     std::set<size_t>& vecs_used, std::set<size_t>& gprs_used) {
     if (body.empty())
@@ -302,6 +298,10 @@ void TileSchedulerEmitter::emit_impl(const std::vector<size_t>& in,
             h->jge(for_body, CodeGenerator::T_NEAR);
         }
     }
+}
+
+std::vector<AllocatedEmitter>& TileEmitter::get_nested_code() {
+    return body;
 }
 
 TileEmitter::TileEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,

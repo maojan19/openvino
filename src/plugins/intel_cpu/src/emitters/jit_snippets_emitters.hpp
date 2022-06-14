@@ -40,7 +40,6 @@ class jit_container_emitter: public jit_emitter {
 public:
     jit_container_emitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
                           const std::shared_ptr<ov::Node>& n);
-    std::vector<AllocatedEmitter> get_nested_code();
 protected:
     // maps gpr and vec abstract registers to physical ones. Physical reg indexes are taken from the provided pools
     // (the first 2 args). All the used gpr and vec registers are also stored in the provided sets (the second 2 args).
@@ -141,6 +140,7 @@ public:
     TileEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa, const std::shared_ptr<ov::Node>& n);
 
     size_t get_inputs_num() const override {return 0;}
+    std::vector<AllocatedEmitter>& get_nested_code();
     void emit_code(const std::vector<size_t> &in,
                    const std::vector<size_t> &out,
                    const std::vector<size_t> &pool,
