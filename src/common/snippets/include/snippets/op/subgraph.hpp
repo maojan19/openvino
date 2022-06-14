@@ -95,7 +95,8 @@ public:
                                 const ov::element::Type exec_type = ngraph::element::f32, const void* compile_params = nullptr);
     snippets::Schedule generate(ngraph::pass::Manager &opt, const void* compile_params = nullptr);
     snippets::Schedule generate(const void* compile_params = nullptr);
-    Shape canonicalize(const BlockedShapeVector& output_shapes, const BlockedShapeVector& input_shapes, const ov::element::Type exec_type);
+    ov::PartialShape canonicalize(const BlockedShapeVector& output_shapes, const BlockedShapeVector& input_shapes, const ov::element::Type exec_type);
+    ov::PartialShape get_master_shape();
 
     // plugin sets generator for a snippet to some specific generator.
     // it's going to be replaced with Jitters table later
@@ -113,7 +114,7 @@ private:
     void align_precision(const BlockedShapeVector& outputShapes, const BlockedShapeVector& inputShapes,
                          const ov::element::Type exec_type);
     void convert_to_snippet_dialect();
-    Shape exec_domain;
+    ov::PartialShape master_shape;
     std::shared_ptr<ov::Model> m_body;
     std::shared_ptr<ngraph::snippets::Generator> m_generator;
 };
