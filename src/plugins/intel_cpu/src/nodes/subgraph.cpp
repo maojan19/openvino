@@ -393,6 +393,8 @@ void Snippet::prepareParams() {
         // todo: this is an excessive check for debug purposes, remove it before merge
         if (std::any_of(normInputShapes.begin(), normInputShapes.end(), [](PartialShape x) {return x.is_dynamic();}))
             IE_THROW() << "All input shapes must be static by now";
+    } else {
+        normOutputShapes = originalNormOutputShapes;
     }
     // todo: this is an excessive check for debug purposes, remove it before merge
     if (masterShape.is_dynamic())
