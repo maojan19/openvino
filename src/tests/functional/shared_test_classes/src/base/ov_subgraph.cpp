@@ -28,7 +28,6 @@
 
 #include <setjmp.h>
 
-#include <thread>
 namespace ov {
 namespace test {
 
@@ -165,16 +164,6 @@ void SubgraphBaseTest::compare(const std::vector<ov::Tensor>& expected,
                 }
             }
             auto it = compareMap.find(inputNode->get_type_info());
-            ///
-            auto exp = expected[j].data<float>();
-            auto act = actual[j].data<float>();
-            auto num_elem = expected[j].get_size();
-            std::this_thread::sleep_for(std::chrono::duration<int, std::milli>(2000));
-            std::cerr << "Expected : Actual \n" << std::flush;
-            for (int k=0; k < num_elem; k++) {
-                std::cerr << k  << " : " << exp[k] << " : " << act[k] << "\n";
-            }
-            ///
             it->second(inputNode, i, expected[j], actual[j], abs_threshold, rel_threshold);
         }
     }
