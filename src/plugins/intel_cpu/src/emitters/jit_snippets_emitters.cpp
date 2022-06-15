@@ -215,7 +215,7 @@ void TileSchedulerEmitter::emit_tiles(const Reg64& reg_inner_amount, const std::
     using TileAllocatedEmitter = std::pair<std::shared_ptr<TileEmitter>, const ngraph::snippets::RegInfo&>;
     TileAllocatedEmitter vector_tile {std::dynamic_pointer_cast<TileEmitter>(body[0].first), body[0].second};
     TileAllocatedEmitter scalar_tile {std::dynamic_pointer_cast<TileEmitter>(body[1].first), body[1].second};
-    const size_t inner_work_amount = jcp.scheduler_dims[1];
+    const size_t inner_work_amount = jcp.scheduler_work_amounts[1];
     auto process_tile =
         [&](const bool evaluate_once, const TileAllocatedEmitter& tile) {
             // If Tile is evaluated only once, then we can emit its body directly and skip work_amount decrements and checks
@@ -289,7 +289,7 @@ void TileSchedulerEmitter::emit_static_impl(const std::vector<size_t>& in,
     Reg64 reg_inner_amount = Reg64(static_cast<int>(local_gpr_pool.back()));
     local_gpr_pool.pop_back();
     Label for_body;
-    const size_t outer_work_amount = jcp.scheduler_dims[0];
+    const size_t outer_work_amount = jcp.scheduler_work_amounts[0];
     if (outer_work_amount == 1) {
         // emit code directly without looping over external dim
         emit_tiles(reg_inner_amount, data_ptr_regs, vector_size, vec_pool, local_gpr_pool);
