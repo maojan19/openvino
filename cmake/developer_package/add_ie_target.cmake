@@ -74,17 +74,6 @@ function(addIeTarget)
     file(GLOB_RECURSE includes ${includeSearch})
     file(GLOB_RECURSE sources  ${sourceSearch})
 
-    if (${ARG_ROOT} MATCHES .+tests/functional/plugin/cpu)
-        list(FILTER includes INCLUDE REGEX ".+eltwise.h|.+cpu_test_utils.hpp|.+fusing_test_utils.hpp|.+skip_tests_config.hpp")
-        list(FILTER sources INCLUDE REGEX ".+eltwise.cpp|.+cpu_test_utils.cpp|.+fusing_test_utils.cpp|.+skip_tests_config.cpp")
-        foreach(f ${includes})
-            message(STATUS "INCLUDED: " ${f} )
-        endforeach()
-        foreach(f ${sources})
-            message(STATUS "SOURCES: " ${f} )
-        endforeach()
-    endif()
-
     # remove unnecessary directories
     foreach(excludedDir ${ARG_EXCLUDED_SOURCE_PATHS})
         list(FILTER includes EXCLUDE REGEX "${excludedDir}.*")
