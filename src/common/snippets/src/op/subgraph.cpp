@@ -290,6 +290,7 @@ snippets::Schedule snippets::op::Subgraph::generate(ngraph::pass::Manager& opt, 
 
     // actual code emission
     ngraph::snippets::code ptr = m_generator->generate(m_body, compile_params);
+    ov::pass::Serialize("lowered.xml", "lowered.bin").run_on_model(m_body->clone());
 
     // check that body doesn't have constants for scheduling
     std::vector<std::shared_ptr<opset1::Constant>> constants;

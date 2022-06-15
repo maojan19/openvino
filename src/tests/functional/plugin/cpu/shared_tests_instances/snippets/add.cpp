@@ -23,8 +23,10 @@ INSTANTIATE_TEST_SUITE_P(smoke_Snippets_Eltwise, Add,
 
 INSTANTIATE_TEST_SUITE_P(smoke_Snippets_Eltwise, AddSinh,
         ::testing::Combine(
-        ::testing::Values(ov::Shape {1, 42, 16, 64}),
-        ::testing::Values(ov::Shape {1, 42, 16,  1}),
+         ::testing::Values(ov::Shape {1, 1, 2, 64}),
+         ::testing::Values(ov::Shape {1, 1, 2, 1}),
+//        ::testing::Values(ov::Shape {1, 42, 16, 64}),
+//        ::testing::Values(ov::Shape {1, 42, 16,  1}),
         ::testing::Values(3), // Add + 2 converts after inputs
         ::testing::Values(1), // Subgraph is created, since the inputs are followed by converts
         ::testing::Values(CommonTestUtils::DEVICE_CPU)),

@@ -32,9 +32,9 @@ struct jit_snippets_call_args {
 };
 
 struct jit_snippets_compile_args {
-    int64_t scheduler_dims[SNIPPETS_MAX_TILE_RANK] = {};
+//    int64_t scheduler_dims[SNIPPETS_MAX_TILE_RANK] = {};
     int64_t scheduler_offsets[SNIPPETS_MAX_SNIPPETS_DIMS] = {};
-    size_t scheduler_work_amounts[SNIPPETS_MAX_SNIPPETS_DIMS] = {};
+    size_t scheduler_work_amounts[SNIPPETS_MAX_TILE_RANK] = {};
     int64_t data_offsets[SNIPPETS_MAX_SNIPPETS_DIMS * SNIPPETS_MAX_HARNESS_DIMS] = {};
     std::vector<size_t> master_shape{};
 };
