@@ -325,6 +325,7 @@ void TileSchedulerEmitter::emit_dynamic_impl(const std::vector<size_t>& in,
                                             const std::vector<size_t>& vec_pool,
                                             const std::vector<size_t>& gpr_pool,
                                             const ov::intel_cpu::emitter_context *emit_context) const {
+    std::cerr << "Dynamic implementation is being compiled\n";
     const size_t num_inputs = in[0];
     const size_t num_outputs = in[1];
     const size_t vector_size = in[2];

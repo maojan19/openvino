@@ -470,6 +470,7 @@ void Snippet::execute(dnnl::stream strm) {
         call_args.dst_ptrs[i] = reinterpret_cast<uint8_t*>(dstMemPtrs[i]->GetData()) + start_offset_out[i];
 
     if (isDynamic) {
+        std::cerr << "Dynamic implementation is going to be executed\n";
 //        call_args.scheduler_offsets = scheduler_offsets.data();
         std::copy(scheduler_offsets.begin(), scheduler_offsets.end(), call_args.scheduler_offsets);
 //        call_args.data_offsets = data_offsets.data();
