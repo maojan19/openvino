@@ -92,16 +92,9 @@ ngraph::snippets::code ngraph::snippets::Generator::generate(std::shared_ptr<ov:
     OV_ITT_TASK_NEXT(GENERATE, "::Tiles2D")
     // If compile params are provided then it's a static case
     AllocatedEmitter tile_scheduler_region;
-    bool is_static = compile_params != nullptr;
-    auto tile_scheduler = std::make_shared<ngraph::snippets::op::TileScheduler>(vector_region,
-                                                                                scalar_region,
-                                                                                is_static);
-    if (is_static) {
-        tile_scheduler->compile_params = compile_params;
-    } else {
-        // call dynamic tile scheduler
-//        throw ngraph_error("dynamic scheduler is not implemented yet");
-    }
+    auto tile_scheduler = std::make_shared<ngraph::snippets::op::TileScheduler>(vector_region, scalar_region);
+    tile_scheduler->compile_params = compile_params;
+
     tile_scheduler_region =
         std::make_pair(target->get(ngraph::snippets::op::TileScheduler::get_type_info_static())(tile_scheduler),
                        std::make_pair(std::vector<size_t>({in, out, target->get_lanes()}), std::vector<size_t>{}));

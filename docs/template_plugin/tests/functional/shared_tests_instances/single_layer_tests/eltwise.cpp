@@ -32,8 +32,8 @@ std::vector<std::vector<ov::test::InputShape>> inShapesDynamic = {
 
 std::vector<ov::test::ElementType> netPrecisions = {
         ov::element::f32,
-//        ov::element::f16,
-//        ov::element::i32,
+        ov::element::f16,
+        ov::element::i32,
 };
 
 std::vector<ngraph::helpers::InputLayerType> secondaryInputTypes = {
@@ -67,8 +67,8 @@ std::vector<ngraph::helpers::EltwiseTypes> eltwiseOpTypes = {
 
 std::vector<ngraph::helpers::EltwiseTypes> eltwiseOpTypesDynamic = {
         ngraph::helpers::EltwiseTypes::ADD,
-//        ngraph::helpers::EltwiseTypes::MULTIPLY,
-//        ngraph::helpers::EltwiseTypes::SUBTRACT,
+        ngraph::helpers::EltwiseTypes::MULTIPLY,
+        ngraph::helpers::EltwiseTypes::SUBTRACT,
 };
 
 ov::test::Config additional_config = {};
@@ -95,7 +95,7 @@ const auto multiply_params_dynamic = ::testing::Combine(
         ::testing::Values(CommonTestUtils::DEVICE_TEMPLATE),
         ::testing::Values(additional_config));
 
-//INSTANTIATE_TEST_SUITE_P(smoke_CompareWithRefs_static, EltwiseLayerTest, multiply_params, EltwiseLayerTest::getTestCaseName);
+INSTANTIATE_TEST_SUITE_P(smoke_CompareWithRefs_static, EltwiseLayerTest, multiply_params, EltwiseLayerTest::getTestCaseName);
 INSTANTIATE_TEST_SUITE_P(smoke_CompareWithRefs_dynamic, EltwiseLayerTest, multiply_params_dynamic, EltwiseLayerTest::getTestCaseName);
 
 
