@@ -119,29 +119,66 @@ void KernelEmitter::validate_arguments(const std::vector<size_t> &in,
     if (in.size() != 2)
         IE_THROW() << "KernelEmitter got invalid number of inputs. Expected 2, got " << in.size();
     if (!out.empty())
-        IE_THROW() << "KKernelEmitter got invalid number of outputs. Expected 0, got " << out.size();
+        IE_THROW() << "KernelEmitter got invalid number of outputs. Expected 0, got " << out.size();
 }
 
-void KernelEmitter::init_data_pointers_static(size_t num_inputs, size_t num_params,
+void KernelEmitter::init_data_pointers(size_t num_inputs, size_t num_params,
                                               const Reg64& reg_indexes, const Reg64& reg_const_params, const std::vector<Reg64>& data_ptr_regs) const {
-    const int64_t harness_num_dims = jcp.master_shape.size() - 1;
-    auto init_ptrs_with_offsets = [&](Reg64 pointer, const int64_t *offsets, Reg64 reg_tmp) {
-        for (int j = 0; j < harness_num_dims; j++) {
-            if (jcp.master_shape[j] != 1 && offsets[j] != 0) {
-                h->mov(reg_tmp, offsets[j]);
+    // Todo: is it safe to rely on 6? At least add a check in the node
+    //  maybe pass some params as jcp even in dynamic case?
+//    const int64_t offsetRank = jcp.master_shape.size() - 1;
+    const int64_t offsetRank = 6 - 1;
+    std::function<void(Reg64, size_t, Reg64)> init_ptr_with_offset;
+    if (is_static) {
+        init_ptr_with_offset = [&](Reg64 pointer, size_t offset_start_index, Reg64 reg_tmp) {
+            const int64_t *offsets =  jcp.data_offsets + offset_start_index;
+            for (int j = 0; j < offsetRank; j++) {
+                if (jcp.master_shape[j] != 1 && offsets[j] != 0) {
+                    h->mov(reg_tmp, offsets[j]);
+                    h->imul(reg_tmp, h->ptr[reg_indexes + j * sizeof(size_t)]);
+                    h->add(pointer, reg_tmp);
+                }
+            }
+        };
+    } else {
+        init_ptr_with_offset = [&](Reg64 pointer, size_t offset_displ, Reg64 reg_tmp) {
+            const size_t data_offests_displ = GET_OFF(data_offsets) + offset_displ * sizeof(int64_t);
+            // todo: we can pre-filter data_offsets so that only (master_shape[k] != 1 && offsets[k] != 0) are stored there
+            //  but we'll need an additional index array to specify appropriate "k" values for every input
+            //  * size_t num_non_zero_offsets[num_params] - specifies number of non-zero offsets for every input
+            //  * size_t offsetted_indexes* - points to memory chunk sizeof(sum(num_non_zero_offsets) * sizeof(size_t)) -
+            //                                  specifies indexes of input indexes (reg_index) that need an offset
+            //  * size_t data_offsets* - the same size as offsetted_indexes - offset values for input indexes
+            for (int j = 0; j < offsetRank; j++) {
+                h->mov(reg_tmp, h->ptr[reg_const_params + data_offests_displ + j * sizeof(int64_t)]);
                 h->imul(reg_tmp, h->ptr[reg_indexes + j * sizeof(size_t)]);
                 h->add(pointer, reg_tmp);
             }
-        }
-    };
-    for (auto i = 0; i < num_params; i++) {
+        };
+    }
+    const bool last_iter_explicitly = gp_regs_pool.empty();
+    Reg64 reg_tmp = last_iter_explicitly ? data_ptr_regs.back() : Reg64(gp_regs_pool.back());
+    size_t i = 0;
+    for (; i < num_params - last_iter_explicitly; i++) {
         if (i < num_inputs)
             h->mov(data_ptr_regs[i], h->ptr[reg_const_params + GET_OFF(src_ptrs) + i * sizeof(void*)]);
         else
             h->mov(data_ptr_regs[i], h->ptr[reg_const_params + GET_OFF(dst_ptrs) + (i - num_inputs) * sizeof(void*)]);
-        // we can use the last data_ptr_reg as tmp_reg until the last iteration, and reg_const_params then
-        Reg64 reg_tmp = i < num_params-1 ? data_ptr_regs.back() : reg_const_params;
-        init_ptrs_with_offsets(data_ptr_regs[i], &jcp.data_offsets[i * harness_num_dims], reg_tmp);
+        init_ptr_with_offset(data_ptr_regs[i], i * offsetRank, reg_tmp);
+    }
+    // a rare case when num_params is maximal, so we have no spare gprs
+    if (last_iter_explicitly) {
+        h->mov(data_ptr_regs[i], h->ptr[reg_const_params + GET_OFF(dst_ptrs) + (i - num_inputs) * sizeof(void*)]);
+        if (is_static) {
+            // can corrupt reg_const_params, since we won't use it anymore
+            init_ptr_with_offset(data_ptr_regs[i], i * offsetRank, reg_const_params);
+        } else {
+            // have to restore reg_tmp explicitly in dynamic case, can use stack or vector reg
+            reg_tmp = data_ptr_regs.front();
+            h->push(reg_tmp);
+            init_ptr_with_offset(data_ptr_regs[i], i * offsetRank, reg_tmp);
+            h->pop(reg_tmp);
+        }
     }
 }
 void KernelEmitter::emit_impl(const std::vector<size_t>& in,
@@ -159,17 +196,15 @@ void KernelEmitter::emit_impl(const std::vector<size_t>& in,
     std::vector<Reg64> data_ptr_regs(gp_regs_used.size());
     std::transform(gp_regs_used.begin(), gp_regs_used.end(), data_ptr_regs.begin(), [](size_t idx){return Reg64(static_cast<int>(idx));});
 
+    init_data_pointers(num_inputs, num_inputs + num_outputs, reg_indexes, reg_const_params, data_ptr_regs);
     auto local_gpr_pool = gp_regs_pool;
     if (is_static) {
         // todo: emit_impl is a const method, so we can't just push_back unused regs to the gp_regs_pool.
         //  we need a more elegant approach to avoid a full copy here
-        init_data_pointers_static(num_inputs, num_inputs + num_outputs, reg_indexes, reg_const_params, data_ptr_regs);
         // in static case, we won't need runtime args anymore
         local_gpr_pool.push_back(static_cast<size_t>(reg_indexes.getIdx()));
         local_gpr_pool.push_back(static_cast<size_t>(reg_const_params.getIdx()));
     }
-//    else
-//        init_data_pointers_dynamic(num_inputs, num_inputs + num_outputs, reg_indexes, reg_const_params, data_ptr_regs);
     for (const auto& c : body) {
         const auto& emitter = c.first;
         std::vector<size_t> in_regs, out_regs;
@@ -341,61 +376,18 @@ void TileSchedulerEmitter::emit_dynamic_impl(const std::vector<size_t>& in,
     const size_t num_outputs = in[1];
     const size_t vector_size = in[2];
     const size_t num_params = num_inputs + num_outputs;
-    // Todo: is it safe to rely on 6? At least add a check in the node
-    const int64_t master_rank = 6; //jcp.master_shape.size();
-    const int64_t offsetRank = master_rank - 1;
 
-    // remove data ptr regs from the pool, since they should be preserved
     const auto& data_ptr_reg_idxs(out);
+    std::vector<Reg64> data_ptr_regs(data_ptr_reg_idxs.size());
+    std::transform(data_ptr_reg_idxs.begin(), data_ptr_reg_idxs.end(), data_ptr_regs.begin(), [](size_t idx){return Reg64(static_cast<int>(idx));});
 
-    // It is critical that reg_indexes and reg_const_params represent the
-    // first two runtime arguments, since they are used to calculate offsets
     Reg64 reg_indexes = Reg64(static_cast<int>(in[3]));
     Reg64 reg_const_params = Reg64(static_cast<int>(in[4]));
-
-    auto init_ptrs_with_offsets = [&](Reg64 pointer, const int64_t offset_displ, Reg64 reg_tmp) {
-        // Note that we don't need the last offset, since increment over the last dimension is
-        // performed directly by the Load emitter
-//        for (int k = 0; k < offsetRank; k++) {
-//            if (jcp.master_shape[k] != 1 && offsets[k] != 0) {
-//                h->mov(reg_tmp, offsets[k]);
-//                h->imul(reg_tmp, h->ptr[reg_indexes + k * sizeof(size_t)]);
-//                h->add(pointer, reg_tmp);
-//            }
-//        }
-        const size_t data_offests_displ = GET_OFF(data_offsets) + offset_displ * sizeof(int64_t);
-        // todo: we can pre-filter data_offsets so that only (master_shape[k] != 1 && offsets[k] != 0) are stored there
-        //  but we'll need an additional index array to specify appropriate "k" values for every input
-        //  * size_t num_non_zero_offsets[num_params] - specifies number of non-zero offsets for every input
-        //  * size_t offsetted_indexes* - points to memory chunk sizeof(sum(num_non_zero_offsets) * sizeof(size_t)) -
-        //                                  specifies indexes of input indexes (reg_index) that need an offset
-        //  * size_t data_offsets* - the same size as offsetted_indexes - offset values for input indexes
-        for (int k = 0; k < offsetRank; k++) {
-                h->mov(reg_tmp, h->ptr[reg_const_params + data_offests_displ + k * sizeof(int64_t)]);
-                h->imul(reg_tmp, h->ptr[reg_indexes + k * sizeof(size_t)]);
-                h->add(pointer, reg_tmp);
-        }
-    };
-    std::vector<Reg64> data_ptr_regs(num_params);
-    if (gpr_pool.size() == 0)
-        IE_THROW() << "Dynamic TileSchedulerEmitter needs one more additional gpr";
-    Reg64 reg_tmp = Reg64(static_cast<int>(gpr_pool.back()));
-    for (int j = 0; j < num_params; j++) {
-        data_ptr_regs[j] = Reg64(static_cast<int>(data_ptr_reg_idxs[j]));
-        // todo: Maybe it's more convenient to pass src & dst pointers in a single array
-        auto ptr_offset = j < num_inputs ? GET_OFF(src_ptrs) : GET_OFF(dst_ptrs) - num_inputs * sizeof(void*);
-        h->mov(data_ptr_regs[j], h->ptr[reg_const_params + ptr_offset + j * sizeof(void*)]);
-        // todo: you can't use this trick for dynamic tile
-        // we can use the last data_ptr_reg as tmp_reg until the last iteration, and reg_const_params then
-//        Reg64 reg_tmp = j < num_params - 1 ? Reg64(static_cast<int>(data_ptr_reg_idxs.back())) : reg_const_params;
-//        init_ptrs_with_offsets(data_ptr_regs[j], jcp.data_offsets + j * offsetRank, reg_tmp);
-        init_ptrs_with_offsets(data_ptr_regs[j], j * offsetRank, reg_tmp);
-    }
     Label for_body, single_outer_tile, end;
     // We don't need runtime args, since the data_ptrs are already initialized,
     // So let's reuse reg_indexes and reg_const_params to store work amounts
-    Reg64 reg_outer_amount = reg_indexes;
-    Reg64 reg_inner_amount = reg_const_params;
+    Reg64 reg_outer_amount = Reg64(static_cast<int>(in[3]));
+    Reg64 reg_inner_amount = Reg64(static_cast<int>(in[4]));
     using TileAllocatedEmitter = std::pair<std::shared_ptr<TileEmitter>, const ngraph::snippets::RegInfo&>;
     TileAllocatedEmitter vector_tile {std::dynamic_pointer_cast<TileEmitter>(body[0].first), body[0].second};
     TileAllocatedEmitter scalar_tile {std::dynamic_pointer_cast<TileEmitter>(body[1].first), body[1].second};
