@@ -36,15 +36,20 @@ std::vector<std::vector<ov::Shape>> inShapesStaticCheckCollapse = {
         {{16, 16, 1, 16}, {16, 16, 1, 16}},
 };
 
+//std::vector<std::vector<ov::test::InputShape>> inShapesDynamic = {
+//        {{{ngraph::Dimension(1, 10), 200}, {{2, 200}, {1, 200}}},
+//         {{ngraph::Dimension(1, 10), 200}, {{2, 200}, {5, 200}}}},
+//};
+
 std::vector<std::vector<ov::test::InputShape>> inShapesDynamic = {
-        {{{ngraph::Dimension(1, 10), 200}, {{2, 200}, {1, 200}}},
-         {{ngraph::Dimension(1, 10), 200}, {{2, 200}, {5, 200}}}},
+    {{{ngraph::Dimension(2, 10), 200}, {{2, 200}, {5, 200}}},
+     {{ngraph::Dimension(2, 10), 200}, {{2, 200}, {5, 200}}}},
 };
 
 std::vector<ov::test::ElementType> netPrecisions = {
         ov::element::f32,
-        ov::element::f16,
-        ov::element::i32,
+//        ov::element::f16,
+//        ov::element::i32,
 };
 
 std::vector<ngraph::helpers::InputLayerType> secondaryInputTypes = {
@@ -78,8 +83,8 @@ std::vector<ngraph::helpers::EltwiseTypes> eltwiseOpTypes = {
 
 std::vector<ngraph::helpers::EltwiseTypes> eltwiseOpTypesDynamic = {
         ngraph::helpers::EltwiseTypes::ADD,
-        ngraph::helpers::EltwiseTypes::MULTIPLY,
-        ngraph::helpers::EltwiseTypes::SUBTRACT,
+//        ngraph::helpers::EltwiseTypes::MULTIPLY,
+//        ngraph::helpers::EltwiseTypes::SUBTRACT,
 };
 
 ov::test::Config additional_config = {};
