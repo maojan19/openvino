@@ -197,12 +197,12 @@ void KernelEmitter::emit_impl(const std::vector<size_t>& in,
     std::transform(gp_regs_used.begin(), gp_regs_used.end(), data_ptr_regs.begin(), [](size_t idx){return Reg64(static_cast<int>(idx));});
 
     init_data_pointers(num_inputs, num_inputs + num_outputs, reg_indexes, reg_const_params, data_ptr_regs);
+    // todo: emit_impl is a const method, so we can't just push_back unused regs to the gp_regs_pool.
+    //  we need a more elegant approach to avoid a full copy here
     auto local_gpr_pool = gp_regs_pool;
+    // we won't need indexes in both static and dynamic cases, since offsets are already calculated
+    local_gpr_pool.push_back(static_cast<size_t>(reg_indexes.getIdx()));
     if (is_static) {
-        // todo: emit_impl is a const method, so we can't just push_back unused regs to the gp_regs_pool.
-        //  we need a more elegant approach to avoid a full copy here
-        // in static case, we won't need runtime args anymore
-        local_gpr_pool.push_back(static_cast<size_t>(reg_indexes.getIdx()));
         local_gpr_pool.push_back(static_cast<size_t>(reg_const_params.getIdx()));
     }
     for (const auto& c : body) {
@@ -210,9 +210,8 @@ void KernelEmitter::emit_impl(const std::vector<size_t>& in,
         std::vector<size_t> in_regs, out_regs;
         std::tie(in_regs, out_regs) = c.second;
         if (auto tile_scheduler = std::dynamic_pointer_cast<TileSchedulerEmitter>(emitter)) {
-            // dynamic TileScheduler needs runtime arguments
+            // dynamic TileScheduler needs const runtime params
             if (!is_static) {
-                in_regs.push_back(static_cast<size_t>(dnnl::impl::cpu::x64::abi_param1.getIdx()));
                 in_regs.push_back(static_cast<size_t>(dnnl::impl::cpu::x64::abi_param2.getIdx()));
             }
             out_regs = gp_regs_used;
@@ -245,8 +244,8 @@ void TileSchedulerEmitter::validate_arguments(const std::vector<size_t> &in,
                                      const std::vector<size_t> &gpr) const {
     if (is_static && in.size() != 3)
         IE_THROW() << "TileSchedulerEmitter (static) got invalid number of inputs. Expected 3, got " << in.size();
-    if (!is_static && in.size() != 5)
-        IE_THROW() << "TileSchedulerEmitter (dynamic) got invalid number of inputs. Expected 5, got " << in.size();
+    if (!is_static && in.size() != 4)
+        IE_THROW() << "TileSchedulerEmitter (dynamic) got invalid number of inputs. Expected 4, got " << in.size();
     if (out.size() != in[0] + in[1])
         IE_THROW() << "TileSchedulerEmitter got invalid number of outputs. Expected " << in[0] + in[1] << " , got " << out.size();
     if (body.size() != 2)
@@ -372,22 +371,25 @@ void TileSchedulerEmitter::emit_dynamic_impl(const std::vector<size_t>& in,
                                             const std::vector<size_t>& gpr_pool,
                                             const ov::intel_cpu::emitter_context *emit_context) const {
     std::cerr << "Dynamic implementation is being compiled\n";
-    const size_t num_inputs = in[0];
-    const size_t num_outputs = in[1];
+//    const size_t num_inputs = in[0];
+//    const size_t num_outputs = in[1];
     const size_t vector_size = in[2];
-    const size_t num_params = num_inputs + num_outputs;
+//    const size_t num_params = num_inputs + num_outputs;
 
     const auto& data_ptr_reg_idxs(out);
     std::vector<Reg64> data_ptr_regs(data_ptr_reg_idxs.size());
     std::transform(data_ptr_reg_idxs.begin(), data_ptr_reg_idxs.end(), data_ptr_regs.begin(), [](size_t idx){return Reg64(static_cast<int>(idx));});
 
-    Reg64 reg_indexes = Reg64(static_cast<int>(in[3]));
-    Reg64 reg_const_params = Reg64(static_cast<int>(in[4]));
-    Label for_body, single_outer_tile, end;
-    // We don't need runtime args, since the data_ptrs are already initialized,
-    // So let's reuse reg_indexes and reg_const_params to store work amounts
-    Reg64 reg_outer_amount = Reg64(static_cast<int>(in[3]));
-    Reg64 reg_inner_amount = Reg64(static_cast<int>(in[4]));
+    Reg64 reg_const_params = Reg64(static_cast<int>(in[3]));
+    // todo: this limitation could be removed if we use Reg32 to store work_amounts (which is more than enough),
+    //  since at least one Reg64 (reg_indexes spared in the Kernel) is guaranteed to be in the pool
+    if (gpr_pool.size() < 2)
+        IE_THROW() << "Dynamic Tile Scheduler needs at least two spare gpr regs to operate.";
+    auto local_gpr_pool = gpr_pool;
+    Reg64 reg_outer_amount = Reg64(static_cast<int>(local_gpr_pool.back()));
+    local_gpr_pool.pop_back();
+    Reg64 reg_inner_amount = Reg64(static_cast<int>(local_gpr_pool.back()));
+    local_gpr_pool.pop_back();
     using TileAllocatedEmitter = std::pair<std::shared_ptr<TileEmitter>, const ngraph::snippets::RegInfo&>;
     TileAllocatedEmitter vector_tile {std::dynamic_pointer_cast<TileEmitter>(body[0].first), body[0].second};
     TileAllocatedEmitter scalar_tile {std::dynamic_pointer_cast<TileEmitter>(body[1].first), body[1].second};
@@ -411,7 +413,7 @@ void TileSchedulerEmitter::emit_dynamic_impl(const std::vector<size_t>& in,
         process_tile(vector_size, vector_tile);
         process_tile(1, scalar_tile);
     };
-
+    Label for_body, single_outer_tile, end;
     {
         h->mov(reg_outer_amount, h->ptr[reg_const_params + GET_OFF(scheduler_work_amounts)]);
         // We don't need to apply scheduler offsets, or update reg_outer_amount in case of outer WA == 1
@@ -425,10 +427,10 @@ void TileSchedulerEmitter::emit_dynamic_impl(const std::vector<size_t>& in,
             // Todo: Load and Store emitters are currently implemented so they ALWAYS increment appropriate pointers
             //   after reading/writing. This might be a problem if we need to read the same data multiple times (broadcasting shapes).
             //   To overcome this limitation, we add appropriate negative offsets if necessary.
-            for (auto i = 0; i < num_params; i++) {
-                // NB! many scheduler offsets are zero
-                h->add(data_ptr_regs[i], h->ptr[reg_const_params + GET_OFF(scheduler_offsets) + i * sizeof(int64_t)]);
-            }
+//            for (auto i = 0; i < num_params; i++) {
+//                // NB! many scheduler offsets are zero
+//                h->add(data_ptr_regs[i], h->ptr[reg_const_params + GET_OFF(scheduler_offsets) + i * sizeof(int64_t)]);
+//            }
             // Note that outer dimensions are always incremented by 1 (outer tiles are always scalar)
             h->sub(reg_outer_amount, 1);
             h->cmp(reg_outer_amount, 1);
@@ -486,8 +488,10 @@ void TileEmitter::emit_body(const std::vector<size_t>& vec_pool, const std::vect
 void TileEmitter::emit_ptr_increments(const std::vector<Reg64>& data_ptr_regs) const {
     for (size_t i = 0; i < num_inputs; i++) {
         // those with dims == 1 will be broadcasted, hence don't require increment
-        if (io_dims[i] != 1)
+        if (io_dims[i] > 1)
             h->add(data_ptr_regs[i], increment * sizeof(float));
+        else if (io_dims[i] == -1)
+            IE_THROW() << "Dynamic broadcasting of inner tile is not supported yet";
     }
     for (size_t i = num_inputs; i < num_inputs + num_outputs; i++)
         h->add(data_ptr_regs[i], increment * sizeof(float));
