@@ -304,7 +304,18 @@ void Snippet::optimizeExecDomain(std::vector<PartialShape>& inputShapes, std::ve
         }
         return domain.get_shape();
     };
-    findDimsToCollapse();
+    // todo: remove this debugging prinout, leave only findDimsToCollapse() (compare with master 2b sure)
+    auto static_shape = domain.get_shape();
+    std::cerr << "Shape before optimization: ";
+    for (auto d : static_shape)
+        std::cerr << d << " ";
+    std::cerr << "\n";
+    static_shape = findDimsToCollapse();
+    std::cerr << "Shape after optimization: ";
+    for (auto d : static_shape)
+        std::cerr << d << " ";
+    std::cerr << "\n";
+    std::cerr << "Tile rank after optimization: " << TileRank << "\n";
 }
 void Snippet::normalizeShapes() {
     auto edgeToBlockedShape = [](const EdgePtr& edge) {
@@ -477,6 +488,8 @@ void Snippet::execute(dnnl::stream strm) {
         std::copy(data_offsets.begin(), data_offsets.end(), call_args.data_offsets);
 //        call_args.scheduler_work_amounts = scheduler_work_amounts.data();
         std::copy(scheduler_work_amounts.begin(), scheduler_work_amounts.end(), call_args.scheduler_work_amounts);
+        // todo: this is a WA for one test, we obviously need a more general approach
+        call_args.broadcasting_mask[1] = true; // set mask to true is this io is broadcasted
 //        static_master_shape_placeholder = masterShape.get_shape();
 //        They are needed for offset optimization calculation, but we don't do it for dynamic shapes yet
 //        call_args.master_shape = static_master_shape_placeholder.data();

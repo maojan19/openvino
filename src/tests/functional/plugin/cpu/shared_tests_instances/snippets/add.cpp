@@ -38,11 +38,17 @@ INSTANTIATE_TEST_SUITE_P(smoke_Snippets_Eltwise, AddSinhConst,
                              ::testing::Values(CommonTestUtils::DEVICE_CPU)),
                      AddSinhConst::getTestCaseName);
 
-InputShape inShapesDynamic1 = {{16, 29, ngraph::Dimension(1, 512)}, {{16, 29, 17}}};
+//InputShape inShapesDynamic1 = {{16, 29, ngraph::Dimension(1, 512)}, {{16, 29, 16}}};
+//std::vector<InputShape> inShapesDynamic2 = {
+////        {{16, 29, ngraph::Dimension(1, 512)}, {{16, 29, 17}}}, // no broadcasting on inner Tile => Ok
+//        {{16, 29, ngraph::Dimension(1, 512)}, {{16, 29, 1}}}
+//    };
+
+InputShape inShapesDynamic1 = {{16, 2, ngraph::Dimension(1, 512)}, {{16, 2, 16}}};
 std::vector<InputShape> inShapesDynamic2 = {
-        {{16, 29, ngraph::Dimension(1, 512)}, {{16, 29, 17}}}, // no broadcasting on inner Tile => Ok
-        {{16, 29, ngraph::Dimension(1, 512)}, {{16, 29, 1}}}
-    };
+            {{16, 2, ngraph::Dimension(1, 512)}, {{16, 2, 16}}}, // no broadcasting on inner Tile => Ok
+            {{16, 2, ngraph::Dimension(1, 512)}, {{16, 2, 1}}}
+};
 
 INSTANTIATE_TEST_SUITE_P(smoke_Snippets_Eltwise, AddSinhDynamic,
                          ::testing::Combine(

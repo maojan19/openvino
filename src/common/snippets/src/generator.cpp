@@ -52,12 +52,12 @@ ngraph::snippets::code ngraph::snippets::Generator::generate(std::shared_ptr<ov:
     std::transform(params.begin(), params.end(), io_last_dims.begin(),
                    [](const std::shared_ptr<Node>& n){
                        auto last_dim = n->get_output_partial_shape(0).rbegin();
-                       return last_dim->is_dynamic() ? -1 : last_dim->get_length();
+                       return last_dim->is_dynamic() ? 0 : last_dim->get_length();
                    });
     std::transform(results.begin(), results.end(), io_last_dims.begin() + in,
                    [](const std::shared_ptr<Node>& n){
                        auto last_dim = n->get_input_partial_shape(0).rbegin();
-                       return last_dim->is_dynamic() ? -1 : last_dim->get_length();
+                       return last_dim->is_dynamic() ? 0 : last_dim->get_length();
                    });
 
     OV_ITT_TASK_CHAIN(GENERATE, ngraph::pass::itt::domains::SnippetsTransform, "Snippets::Generator", "::VectorTile")
