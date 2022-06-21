@@ -371,10 +371,10 @@ void TileSchedulerEmitter::emit_dynamic_impl(const std::vector<size_t>& in,
                                             const std::vector<size_t>& gpr_pool,
                                             const ov::intel_cpu::emitter_context *emit_context) const {
     std::cerr << "Dynamic implementation is being compiled\n";
-//    const size_t num_inputs = in[0];
-//    const size_t num_outputs = in[1];
+    const size_t num_inputs = in[0];
+    const size_t num_outputs = in[1];
     const size_t vector_size = in[2];
-//    const size_t num_params = num_inputs + num_outputs;
+    const size_t num_params = num_inputs + num_outputs;
 
     const auto& data_ptr_reg_idxs(out);
     std::vector<Reg64> data_ptr_regs(data_ptr_reg_idxs.size());
@@ -427,10 +427,10 @@ void TileSchedulerEmitter::emit_dynamic_impl(const std::vector<size_t>& in,
             // Todo: Load and Store emitters are currently implemented so they ALWAYS increment appropriate pointers
             //   after reading/writing. This might be a problem if we need to read the same data multiple times (broadcasting shapes).
             //   To overcome this limitation, we add appropriate negative offsets if necessary.
-//            for (auto i = 0; i < num_params; i++) {
-//                // NB! many scheduler offsets are zero
-//                h->add(data_ptr_regs[i], h->ptr[reg_const_params + GET_OFF(scheduler_offsets) + i * sizeof(int64_t)]);
-//            }
+            for (auto i = 0; i < num_params; i++) {
+                // NB! many scheduler offsets are zero
+                h->add(data_ptr_regs[i], h->ptr[reg_const_params + GET_OFF(scheduler_offsets) + i * sizeof(int64_t)]);
+            }
             // Note that outer dimensions are always incremented by 1 (outer tiles are always scalar)
             h->sub(reg_outer_amount, 1);
             h->cmp(reg_outer_amount, 1);
@@ -497,13 +497,11 @@ void TileEmitter::emit_ptr_increments(const std::vector<Reg64>& data_ptr_regs) c
             // todo: this is WA, all the employed regs should be passed to an emitter explicitly!!!
             //  so pass reg_const_params as an in[] arg
             auto reg_const_params = Reg64(dnnl::impl::cpu::x64::abi_param2.getIdx());
-            {
-                h->bt(h->ptr[reg_const_params + GET_OFF(broadcasting_mask)], i);
-                Label skip_increment;
-                h->jb(skip_increment, CodeGenerator::T_SHORT);
-                h->add(data_ptr_regs[i], increment * sizeof(float));
-                h->L(skip_increment);
-            }
+            h->bt(h->ptr[reg_const_params + GET_OFF(broadcasting_mask)], i);
+            Label skip_increment;
+            h->jb(skip_increment, CodeGenerator::T_SHORT);
+            h->add(data_ptr_regs[i], increment * sizeof(float));
+            h->L(skip_increment);
 //            IE_THROW() << "Dynamic broadcasting of inner tile is not supported yet";
         }
     }
@@ -676,6 +674,10 @@ void ScalarStoreEmitter::emit_isa(const std::vector<size_t> &in, const std::vect
 LoadEmitter::LoadEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
                          const std::shared_ptr<ov::Node>& n)
                          : MemoryEmitter(h, isa, n) {
+    if (auto load = std::dynamic_pointer_cast<ngraph::snippets::op::Load>(n))
+        index = load->input_index;
+    else
+        IE_THROW() << "Invalid node type is provided to LoadEmitter";
     in_out_type_ = emitter_in_out_map::gpr_to_vec;
 }
 
@@ -702,7 +704,16 @@ void LoadEmitter::emit_isa(const std::vector<size_t> &in, const std::vector<size
             Xmm, isa == dnnl::impl::cpu::x64::avx2, Ymm, Zmm>::type;
     Reg64 in_reg(static_cast<int>(in[0]));
     Vmm vmm_src0 = Vmm(out[0]);
+//    h->uni_vmovups(vmm_src0, h->ptr[in_reg]);
+    auto reg_const_params = Reg64(dnnl::impl::cpu::x64::abi_param2.getIdx());
+    h->bt(h->ptr[reg_const_params + GET_OFF(broadcasting_mask)], index);
+    Label broadcast, end;
+    h->jb(broadcast, CodeGenerator::T_SHORT);
     h->uni_vmovups(vmm_src0, h->ptr[in_reg]);
+    h->jmp(end);
+    h->L(broadcast);
+    h->uni_vbroadcastss(vmm_src0, h->ptr[in_reg]);
+    h->L(end);
 }
 
 BroadcastLoadEmitter::BroadcastLoadEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
