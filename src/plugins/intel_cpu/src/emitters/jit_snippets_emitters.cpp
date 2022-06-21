@@ -457,6 +457,8 @@ TileEmitter::TileEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu
     num_inputs = tile->num_inputs;
     num_outputs = tile->num_outputs;
     io_dims = tile->io_dims;
+    // zero in io_dims indicates dynamic dimension
+//    is_static = std::all_of(io_dims.begin(), io_dims.end(), [](size_t x) {return x > 0;});
     increment = tile->increment;
     if (io_dims.size() != num_inputs + num_outputs)
         IE_THROW() << "TileEmitter constructor got inconsistent arguments. Check num_inputs + num_outputs == io_dims.size()";
@@ -488,10 +490,22 @@ void TileEmitter::emit_body(const std::vector<size_t>& vec_pool, const std::vect
 void TileEmitter::emit_ptr_increments(const std::vector<Reg64>& data_ptr_regs) const {
     for (size_t i = 0; i < num_inputs; i++) {
         // those with dims == 1 will be broadcasted, hence don't require increment
-        if (io_dims[i] > 1)
+        if (io_dims[i] > 1) {
             h->add(data_ptr_regs[i], increment * sizeof(float));
-        else if (io_dims[i] == -1)
-            IE_THROW() << "Dynamic broadcasting of inner tile is not supported yet";
+            // zero io_dims indicate dynamic dimension
+        } else if (io_dims[i] == 0) {
+            // todo: this is WA, all the employed regs should be passed to an emitter explicitly!!!
+            //  so pass reg_const_params as an in[] arg
+            auto reg_const_params = Reg64(dnnl::impl::cpu::x64::abi_param2.getIdx());
+            {
+                h->bt(h->ptr[reg_const_params + GET_OFF(broadcasting_mask)], i);
+                Label skip_increment;
+                h->jb(skip_increment, CodeGenerator::T_SHORT);
+                h->add(data_ptr_regs[i], increment * sizeof(float));
+                h->L(skip_increment);
+            }
+//            IE_THROW() << "Dynamic broadcasting of inner tile is not supported yet";
+        }
     }
     for (size_t i = num_inputs; i < num_inputs + num_outputs; i++)
         h->add(data_ptr_regs[i], increment * sizeof(float));
