@@ -52,9 +52,9 @@ private:
     static  ov::PartialShape prependWithOnes(const PartialShape& dims, size_t rank);
     void normalizeShapes();
     void optimizeExecDomain(std::vector<PartialShape>&, std::vector<PartialShape>&, PartialShape&, size_t&) const;
-    void calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>& sch_offsets) const;
+    void calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>& sch_offsets, std::bitset<16>& broadcasting_mask) const;
 
-        void generate(const jit_snippets_compile_args*);
+    void generate(const jit_snippets_compile_args*);
 
     // Evaluates generated snippet using parallel backend
     void schedule_6d(const jit_snippets_call_args& const_args) const;
@@ -87,6 +87,7 @@ private:
 
     std::vector<int64_t> data_offsets;
     std::vector<int64_t> scheduler_offsets;
+    std::bitset<16> broadcasting_mask; // needed to pass broadcasting info in dynamic case
     std::vector<size_t> scheduler_work_amounts;
     std::vector<size_t> static_master_shape_placeholder = {}; // placeholder to pass per-inference static master_shape for dynamic cases
 

@@ -175,13 +175,18 @@ void Snippet::initSupportedPrimitiveDescriptors() {
 void Snippet::selectOptimalPrimitiveDescriptor() {
     selectPreferPrimitiveDescriptor(getPrimitivesPriority(), true);
 }
-void Snippet::calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>& sch_offsets) const {
+void Snippet::calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>& sch_offsets, std::bitset<16>& bmask) const {
 //    todo: isn't it better to introduce local variable here?
     const auto &inputShapes = normInputShapes;
     const auto &outputShapes = normOutputShapes;
     const auto& static_master_shape = masterShape.get_shape();
     const size_t numInputs = normInputShapes.size();
     const size_t numParams = numInputs + normOutputShapes.size();
+    if (isDynamic) {
+        for (size_t i = 0; i < inputShapes.size(); i++)
+            bmask[i] = static_master_shape.back() != 1 && inputShapes[i].rbegin()->get_length() == 1;
+        std::cerr << "Brodacasting mask: " << bmask << "\n";
+    }
     // Note that wen don't need offset for the last dim, since it's handled directly by Load/Store emitters
     const size_t offset_rank = static_master_shape.size() - 1;
     offsets.resize(numParams * (offset_rank), 1);
@@ -430,7 +435,7 @@ void Snippet::prepareParams() {
     for (size_t i = 0; i < body_results.size(); i++)
         normOutputShapes[i] = body_results[i]->get_input_shape(0);
     */
-    calcJITParams(data_offsets, scheduler_offsets);
+    calcJITParams(data_offsets, scheduler_offsets, broadcasting_mask);
     auto initStartMemoryOffsets = [this]() {
         const auto config = getSelectedPrimitiveDescriptor()->getConfig();
         const size_t numInputs = inputShapes.size();
@@ -488,8 +493,7 @@ void Snippet::execute(dnnl::stream strm) {
         std::copy(data_offsets.begin(), data_offsets.end(), call_args.data_offsets);
 //        call_args.scheduler_work_amounts = scheduler_work_amounts.data();
         std::copy(scheduler_work_amounts.begin(), scheduler_work_amounts.end(), call_args.scheduler_work_amounts);
-        // todo: this is a WA for one test, we obviously need a more general approach
-        call_args.broadcasting_mask[1] = true; // set mask to true is this io is broadcasted
+        call_args.broadcasting_mask = broadcasting_mask; // set mask to true is this io is broadcasted
 //        static_master_shape_placeholder = masterShape.get_shape();
 //        They are needed for offset optimization calculation, but we don't do it for dynamic shapes yet
 //        call_args.master_shape = static_master_shape_placeholder.data();
