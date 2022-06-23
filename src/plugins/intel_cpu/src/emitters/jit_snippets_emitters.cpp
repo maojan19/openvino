@@ -457,6 +457,12 @@ TileEmitter::TileEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu
     num_inputs = tile->num_inputs;
     num_outputs = tile->num_outputs;
     io_dims = tile->io_dims;
+    for (size_t i = 0; i < io_dims.size(); i ++) {
+        if (io_dims[i] == 0)
+            dynamic_dims_idx.push_back(i);
+        else
+            static_dims_idx.push_back(i);
+    }
     // zero in io_dims indicates dynamic dimension
 //    is_static = std::all_of(io_dims.begin(), io_dims.end(), [](size_t x) {return x > 0;});
     increment = tile->increment;
@@ -488,25 +494,21 @@ void TileEmitter::emit_body(const std::vector<size_t>& vec_pool, const std::vect
 }
 
 void TileEmitter::emit_ptr_increments(const std::vector<Reg64>& data_ptr_regs) const {
-    for (size_t i = 0; i < num_inputs; i++) {
-        // those with dims == 1 will be broadcasted, hence don't require increment
-        if (io_dims[i] > 1) {
-            h->add(data_ptr_regs[i], increment * sizeof(float));
-            // zero io_dims indicate dynamic dimension
-        } else if (io_dims[i] == 0) {
-            // todo: this is WA, all the employed regs should be passed to an emitter explicitly!!!
-            //  so pass reg_const_params as an in[] arg
-            auto reg_const_params = Reg64(dnnl::impl::cpu::x64::abi_param2.getIdx());
-            h->bt(h->ptr[reg_const_params + GET_OFF(broadcasting_mask)], i);
-            Label skip_increment;
-            h->jb(skip_increment, CodeGenerator::T_SHORT);
-            h->add(data_ptr_regs[i], increment * sizeof(float));
-            h->L(skip_increment);
-//            IE_THROW() << "Dynamic broadcasting of inner tile is not supported yet";
-        }
+    for (const auto& idx : static_dims_idx) {
+        if (io_dims[idx] > 1)
+            h->add(data_ptr_regs[idx], increment * sizeof(float));
     }
-    for (size_t i = num_inputs; i < num_inputs + num_outputs; i++)
-        h->add(data_ptr_regs[i], increment * sizeof(float));
+
+    for (const auto& idx : dynamic_dims_idx) {
+        // todo: this is WA, all the employed regs should be passed to an emitter explicitly!!!
+        //  so pass reg_const_params as an in[] arg
+        auto reg_const_params = Reg64(dnnl::impl::cpu::x64::abi_param2.getIdx());
+        h->bt(h->ptr[reg_const_params + GET_OFF(broadcasting_mask)], idx);
+        Label skip_increment;
+        h->jb(skip_increment, CodeGenerator::T_SHORT);
+        h->add(data_ptr_regs[idx], increment * sizeof(float));
+        h->L(skip_increment);
+    }
 }
 
 void TileEmitter::emit_impl(const std::vector<size_t>& in,
@@ -514,9 +516,36 @@ void TileEmitter::emit_impl(const std::vector<size_t>& in,
                             const std::vector<size_t>& vec_pool,
                             const std::vector<size_t>& gpr_pool,
                             const ov::intel_cpu::emitter_context *emit_context) const {
+//    using Vmm = typename dnnl::impl::utils::conditional3<isa == dnnl::impl::cpu::x64::sse41,
+//                                                         Xmm, isa == dnnl::impl::cpu::x64::avx2, Ymm, Zmm>::type;
     Reg64 work_amount = Reg64(static_cast<int>(in[0]));
     std::vector<Reg64> data_ptr_regs(out.size());
     std::transform(out.begin(), out.end(), data_ptr_regs.begin(), [](size_t idx){return Reg64(static_cast<int>(idx));});
+    //// Physical broadcasting
+    auto reg_const_params = Reg64(dnnl::impl::cpu::x64::abi_param2.getIdx());
+    // todo: actually we can use (&corrupt) any vec register at this point, no?
+//    if (vec_pool.empty())
+//        IE_THROW() << "Dynamic Tile needs at least one spare vector register to operate.";
+//    Ymm Vmm_tmp = Ymm(static_cast<int>(vec_pool.back()));
+    Ymm Vmm_tmp = Ymm(0);
+    for (size_t i = 0; i < dynamic_dims_idx.size(); i++) {
+        auto idx = dynamic_dims_idx[i];
+        const auto& data_ptr_reg = data_ptr_regs[idx];
+        // Both inputs and outputs can be dynamics, but only inputs could be broadcasted
+        if (idx >= num_inputs)
+            continue;
+        // todo: we can store dynamic broadcasting info only for dynamic inputs (not for all, like we do now)
+        h->bt(h->ptr[reg_const_params + GET_OFF(broadcasting_mask)], idx); // idx->i
+        Label no_broadcasting;
+        h->jae(no_broadcasting, CodeGenerator::T_SHORT); // CF==0 <=> broadcasting_mask[idx] == false
+        h->push(data_ptr_reg);
+        h->uni_vbroadcastss(Vmm_tmp, h->ptr[data_ptr_reg]);
+        h->mov(data_ptr_reg, GET_OFF(scratchpad) + i * increment);
+        h->add(data_ptr_reg, reg_const_params);
+        h->uni_vmovups(h->ptr[data_ptr_reg], Vmm_tmp);
+        h->L(no_broadcasting);
+    }
+    ////
     Label for_body;
     // Note that:
     // * Work amount must be set by TileScheduler that executes Tiles
@@ -527,6 +556,20 @@ void TileEmitter::emit_impl(const std::vector<size_t>& in,
     h->sub(work_amount, increment);
     h->cmp(work_amount, increment);
     h->jge(for_body, CodeGenerator::T_NEAR);
+    ///
+    for (auto i = dynamic_dims_idx.rbegin(); i < dynamic_dims_idx.rend(); i++) {
+        const auto& idx = *i;
+        if (idx >= num_inputs)
+            continue;
+        // Both inputs and outputs can be dynamics, but only inputs could be broadcasted
+        // todo: we can store dynamic broadcasting info only for dynamic inputs (not for all, like we do now)
+        h->bt(h->ptr[reg_const_params + GET_OFF(broadcasting_mask)], idx); // idx->i
+        Label no_broadcasting;
+        h->jae(no_broadcasting, CodeGenerator::T_SHORT); // CF==0 <=> broadcasting_mask[idx] == false
+        h->pop(data_ptr_regs[idx]);
+        h->L(no_broadcasting);
+    }
+    ///
 }
 
 FakeBroadcastEmitter::FakeBroadcastEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
@@ -704,16 +747,16 @@ void LoadEmitter::emit_isa(const std::vector<size_t> &in, const std::vector<size
             Xmm, isa == dnnl::impl::cpu::x64::avx2, Ymm, Zmm>::type;
     Reg64 in_reg(static_cast<int>(in[0]));
     Vmm vmm_src0 = Vmm(out[0]);
-//    h->uni_vmovups(vmm_src0, h->ptr[in_reg]);
-    auto reg_const_params = Reg64(dnnl::impl::cpu::x64::abi_param2.getIdx());
-    h->bt(h->ptr[reg_const_params + GET_OFF(broadcasting_mask)], index);
-    Label broadcast, end;
-    h->jb(broadcast, CodeGenerator::T_SHORT);
     h->uni_vmovups(vmm_src0, h->ptr[in_reg]);
-    h->jmp(end);
-    h->L(broadcast);
-    h->uni_vbroadcastss(vmm_src0, h->ptr[in_reg]);
-    h->L(end);
+//    auto reg_const_params = Reg64(dnnl::impl::cpu::x64::abi_param2.getIdx());
+//    h->bt(h->ptr[reg_const_params + GET_OFF(broadcasting_mask)], index);
+//    Label broadcast, end;
+//    h->jb(broadcast, CodeGenerator::T_SHORT);
+//    h->uni_vmovups(vmm_src0, h->ptr[in_reg]);
+//    h->jmp(end);
+//    h->L(broadcast);
+//    h->uni_vbroadcastss(vmm_src0, h->ptr[in_reg]);
+//    h->L(end);
 }
 
 BroadcastLoadEmitter::BroadcastLoadEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,

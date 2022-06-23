@@ -210,14 +210,6 @@ void Snippet::calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>&
                 offsets[j] = 0;
         }
     }
-//    for (size_t j = 0; j < offset_rank; j++) {
-//        if (static_master_shape[j] == 1) {
-//            for (size_t i = j; i < numParams * offset_rank; i+=offset_rank) {
-//                offsets[i * offset_rank + j] = 0;
-//            }
-//        }
-//    }
-//    }
     for (auto &d : offsets)
         d *= dataSize;
 
@@ -238,7 +230,6 @@ void Snippet::calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>&
                 sch_offsets[i] = off;
                 // if outer tile is broadcasted then we need to step back to read the same data once again
             } else if (input_shape[input_shape.size() - 2] != static_master_shape[static_master_shape.size() - 2] && input_shape.back() != 1) {
-//                sch_offsets[i] = -1 * master_shape.back() * dataSize;
                 sch_offsets[i] = -1 * static_master_shape[static_master_shape.size() - 1] * dataSize;
             }
         }
