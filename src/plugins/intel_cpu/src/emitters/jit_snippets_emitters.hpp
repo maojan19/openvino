@@ -28,6 +28,9 @@ struct jit_snippets_call_args {
     size_t scheduler_work_amounts[SNIPPETS_MAX_TILE_RANK] = {};
     int64_t data_offsets[SNIPPETS_MAX_SNIPPETS_DIMS * SNIPPETS_MAX_HARNESS_DIMS] = {};
     std::bitset<16> broadcasting_mask = {}; // bit is set if broadcasting over this io takes palce
+    // todo: this memory could be reserved at compile time aka false data section
+    //  moreover we can reserve for dynamic inputs only
+    int64_t scratchpad[SNIPPETS_MAX_SNIPPETS_DIMS * 64] = {};
 //    size_t* master_shape;
 //    size_t masterRank;
 };
@@ -186,6 +189,8 @@ private:
     size_t num_outputs = 0;
     std::vector<size_t> io_dims {};
     size_t increment = 0;
+    std::vector<size_t> static_dims_idx {}; // non-zero io_dims indexes == dims that are not broadcasted
+    std::vector<size_t> dynamic_dims_idx {}; // non-zero io_dims indexes == dims that are not broadcasted
 };
 
 class NopEmitter : public jit_emitter {
