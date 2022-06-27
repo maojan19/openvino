@@ -169,6 +169,9 @@ public:
     void emit_body(const std::vector<size_t>& vec_pool, const std::vector<size_t>& gpr_pool) const;
     void emit_ptr_increments(const std::vector<Reg64>& data_ptr_regs) const;
     void emit_data() const override;
+    template <dnnl::impl::cpu::x64::cpu_isa_t isa>
+    void set_increments_and_broadcast_inputs(const Reg64& reg_const_params, const std::vector<Reg64> &data_ptr_regs) const;
+    void cleanup_broadcasting(const Reg64& reg_const_params, const std::vector<Reg64> &data_ptr_regs) const;
 
 private:
     void validate_arguments(const std::vector<size_t> &in,
