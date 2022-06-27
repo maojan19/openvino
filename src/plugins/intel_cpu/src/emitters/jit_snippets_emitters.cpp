@@ -457,12 +457,18 @@ TileEmitter::TileEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu
     num_inputs = tile->num_inputs;
     num_outputs = tile->num_outputs;
     io_dims = tile->io_dims;
+    size_t num_dynamic_inputs = 0;
     for (size_t i = 0; i < io_dims.size(); i ++) {
-        if (io_dims[i] == 0)
+        if (io_dims[i] == 0) {
             dynamic_dims_idx.push_back(i);
-        else
+            if (i < num_inputs)
+                num_dynamic_inputs++;
+        } else {
             static_dims_idx.push_back(i);
+        }
     }
+    dynamic_increments.resize(dynamic_dims_idx.size());
+    dynamic_broadcasting.resize(num_dynamic_inputs);
     // zero in io_dims indicates dynamic dimension
 //    is_static = std::all_of(io_dims.begin(), io_dims.end(), [](size_t x) {return x > 0;});
     increment = tile->increment;
@@ -499,15 +505,9 @@ void TileEmitter::emit_ptr_increments(const std::vector<Reg64>& data_ptr_regs) c
             h->add(data_ptr_regs[idx], increment * sizeof(float));
     }
 
-    for (const auto& idx : dynamic_dims_idx) {
-        // todo: this is WA, all the employed regs should be passed to an emitter explicitly!!!
-        //  so pass reg_const_params as an in[] arg
-        auto reg_const_params = Reg64(dnnl::impl::cpu::x64::abi_param2.getIdx());
-        h->bt(h->ptr[reg_const_params + GET_OFF(broadcasting_mask)], idx);
-        Label skip_increment;
-        h->jb(skip_increment, CodeGenerator::T_SHORT);
-        h->add(data_ptr_regs[idx], increment * sizeof(float));
-        h->L(skip_increment);
+    for (size_t i = 0; i < dynamic_dims_idx.size(); i++) {
+        auto idx = dynamic_dims_idx[i];
+        h->add(data_ptr_regs[idx], h->qword[h->rip + dynamic_increments[i]]);
     }
 }
 
@@ -523,27 +523,29 @@ void TileEmitter::emit_impl(const std::vector<size_t>& in,
     std::transform(out.begin(), out.end(), data_ptr_regs.begin(), [](size_t idx){return Reg64(static_cast<int>(idx));});
     //// Physical broadcasting
     auto reg_const_params = Reg64(dnnl::impl::cpu::x64::abi_param2.getIdx());
-    // todo: actually we can use (&corrupt) any vec register at this point, no?
-//    if (vec_pool.empty())
-//        IE_THROW() << "Dynamic Tile needs at least one spare vector register to operate.";
-//    Ymm Vmm_tmp = Ymm(static_cast<int>(vec_pool.back()));
     Ymm Vmm_tmp = Ymm(0);
     for (size_t i = 0; i < dynamic_dims_idx.size(); i++) {
         auto idx = dynamic_dims_idx[i];
         const auto& data_ptr_reg = data_ptr_regs[idx];
-        // Both inputs and outputs can be dynamics, but only inputs could be broadcasted
-        if (idx >= num_inputs)
-            continue;
         // todo: we can store dynamic broadcasting info only for dynamic inputs (not for all, like we do now)
         h->bt(h->ptr[reg_const_params + GET_OFF(broadcasting_mask)], idx); // idx->i
-        Label no_broadcasting;
+        Label no_broadcasting, end_broadcasting_handling;
         h->jae(no_broadcasting, CodeGenerator::T_SHORT); // CF==0 <=> broadcasting_mask[idx] == false
-        h->push(data_ptr_reg);
-        h->uni_vbroadcastss(Vmm_tmp, h->ptr[data_ptr_reg]);
-        h->mov(data_ptr_reg, GET_OFF(scratchpad) + i * increment);
-        h->add(data_ptr_reg, reg_const_params);
-        h->uni_vmovups(h->ptr[data_ptr_reg], Vmm_tmp);
+        // Both inputs and outputs can be dynamics, but only inputs could be physically broadcasted
+        if (idx < num_inputs) {
+            h->push(data_ptr_reg);
+            h->uni_vbroadcastss(Vmm_tmp, h->ptr[data_ptr_reg]);
+            h->mov(data_ptr_reg, dynamic_broadcasting[i]);
+            // note that we use data_ptr_reg directly without h->rip
+            h->uni_vmovups(h->ptr[data_ptr_reg], Vmm_tmp);
+        }
+        // write a proper increment into the increment scratchpad (no increment because of broadcasting)
+        h->mov(h->qword[h->rip + dynamic_increments[i]], 0);
+        h->jmp(end_broadcasting_handling, CodeGenerator::T_SHORT);
         h->L(no_broadcasting);
+        // write a proper increment into the increment scratchpad (usual increment)
+        h->mov(h->qword[h->rip + dynamic_increments[i]], increment * sizeof(float));
+        h->L(end_broadcasting_handling);
     }
     ////
     Label for_body;
@@ -570,6 +572,21 @@ void TileEmitter::emit_impl(const std::vector<size_t>& in,
         h->L(no_broadcasting);
     }
     ///
+}
+
+void TileEmitter::emit_data() const {
+    h->align(64);
+    std::cerr << "TILE EMIT_DATA section\n";
+    for (auto& inc_label : dynamic_increments) {
+        // quadroword to fill 64 bit for Reg64
+        h->L(inc_label);
+        h->dq(0);
+    }
+    for (auto& broadcast_label : dynamic_broadcasting) {
+        h->L(broadcast_label);
+        for (auto i=0; i < increment; i++)
+            h->dd(0);
+    }
 }
 
 FakeBroadcastEmitter::FakeBroadcastEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
