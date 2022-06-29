@@ -459,8 +459,11 @@ TileEmitter::TileEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu
     num_outputs = tile->num_outputs;
     io_dims = tile->io_dims;
     size_t num_dynamic_inputs = 0;
+    const bool has_dynamic_dims = std::any_of(io_dims.begin(), io_dims.end(), [](size_t x) {return x == 0;});
     for (size_t i = 0; i < io_dims.size(); i ++) {
-        if (io_dims[i] == 0) {
+        // If a last dim is static, but == 1 and there are some dynamic inputs as well,
+        // then treat the dim as dynamic, since we'll now whether it's broadcasted only at runtime
+        if (io_dims[i] == 0 || (io_dims[i] == 1 && has_dynamic_dims)) {
             dynamic_dims_idx.push_back(i);
             if (i < num_inputs)
                 num_dynamic_inputs++;
@@ -471,7 +474,6 @@ TileEmitter::TileEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu
     dynamic_increments.resize(dynamic_dims_idx.size());
     dynamic_broadcasting.resize(num_dynamic_inputs);
     // zero in io_dims indicates dynamic dimension
-//    is_static = std::all_of(io_dims.begin(), io_dims.end(), [](size_t x) {return x > 0;});
     increment = tile->increment;
     if (io_dims.size() != num_inputs + num_outputs)
         IE_THROW() << "TileEmitter constructor got inconsistent arguments. Check num_inputs + num_outputs == io_dims.size()";

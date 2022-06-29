@@ -500,7 +500,8 @@ TokenizeSnippets::TokenizeSnippets() {
             throw ngraph_error("newly create subgraph doesn't much number of results");
         }
 
-        if (outputs_are_not_broadcastable(subgraph))
+        // todo: generalize this check to dynamic and mixed dynamic + static outputs
+        if (false && outputs_are_not_broadcastable(subgraph))
             return abort_with_strategy("New subgraph is created due to outputs of a subgraph not broadcastable.");
 
         for (size_t i = 0; i < subgraph->get_output_size(); ++i) {

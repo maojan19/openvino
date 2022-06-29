@@ -243,13 +243,18 @@ void snippets::op::Subgraph::convert_to_snippet_dialect() {
         const auto& last_dim = pshape[pshape.size() - 1];
         return last_dim.is_dynamic() || last_dim.get_length() != 1;
     };
+    const auto & params = m_body->get_parameters();
+    bool inputs_has_dynamic_last_dims = std::any_of(params.begin(), params.end(),
+                                          [](const shared_ptr<ngraph::op::Parameter>& p){
+                                                 return p->get_partial_shape().rbegin()->is_dynamic();
+                                             });
     ngraph::pass::Manager manager;
     manager.register_pass<snippets::pass::ConvertConstantsToScalars>();
     manager.register_pass<snippets::pass::ConvertPowerToPowerStatic>();
     manager.register_pass<snippets::pass::InsertLoad>();
     manager.register_pass<snippets::pass::InsertStore>();
     // todo: figure out how to broadcast for dynamic shapes
-    if (master_shape.is_static()) {
+    if (!inputs_has_dynamic_last_dims) {
         manager.register_pass<snippets::pass::InsertMoveBroadcast>();
     }
 //    Todo: an alternative solution is to skip only dynamic nodes. Leave for now, but remove as soon as dynamicTile works
@@ -277,7 +282,7 @@ void snippets::op::Subgraph::convert_to_snippet_dialect() {
     //                        Result
     // Note: Load* should be replaced with ScalarLoad in this example to avoid invalid read in vector Tile.
 //    if (!master_shape.empty() && master_shape.back() != 1) {
-    if (master_shape.size() != 0 && master_shape[master_shape.size() - 1].is_static() && master_shape[master_shape.size() - 1] != 1) {
+    if (master_shape.size() != 0 && !inputs_has_dynamic_last_dims && master_shape[master_shape.size() - 1] != 1) {
         manager.register_pass<snippets::pass::ReplaceLoadsWithScalarLoads>();
         manager.register_pass<snippets::pass::ReplaceStoresWithScalarStores>();
         manager.get_pass_config()->
@@ -319,7 +324,7 @@ snippets::Schedule snippets::op::Subgraph::generate(ngraph::pass::Manager& opt, 
     snippets::pass::AssignRegisters().run_on_model(m_body);
 
     // schedule generation should go here and be target agnostic
-
+    ov::pass::Serialize("body.xml", "body.bin").run_on_model(m_body);
     // actual code emission
     ngraph::snippets::code ptr = m_generator->generate(m_body, compile_params);
 
