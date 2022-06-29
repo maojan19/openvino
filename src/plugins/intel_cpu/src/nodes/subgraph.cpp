@@ -182,11 +182,11 @@ void Snippet::calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>&
     const auto& static_master_shape = masterShape.get_shape();
     const size_t numInputs = normInputShapes.size();
     const size_t numParams = numInputs + normOutputShapes.size();
-    if (isDynamic) {
-        for (size_t i = 0; i < inputShapes.size(); i++)
-            bmask[i] = static_master_shape.back() != 1 && inputShapes[i].rbegin()->get_length() == 1;
-        std::cerr << "Brodacasting mask: " << bmask << "\n";
-    }
+
+    for (size_t i = 0; i < inputShapes.size(); i++)
+        bmask[i] = static_master_shape.back() != 1 && inputShapes[i].rbegin()->get_length() == 1;
+    std::cerr << "Brodacasting mask: " << bmask << "\n";
+
     // Note that wen don't need offset for the last dim, since it's handled directly by Load/Store emitters
     const size_t offset_rank = static_master_shape.size() - 1;
     offsets.resize(numParams * (offset_rank), 1);
@@ -227,7 +227,11 @@ void Snippet::calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>&
                 // offset == data_size only if input_shape.back() == 1, but ScalarLoadEmitter doesn't perform increment
                 // in such cases, because it thinks it's broadcasting.
             } else if (off == dataSize) {
-                sch_offsets[i] = off;
+                // todo: data_ptr increments in case of broadcasting are handled differently in static and dynamic cases
+                //  static: if last_io_dims == 1 => assume broadcasting and skip pointer increment
+                //  dynamic: perform increments based on broadcasting mask (if no broadcasting then increment)
+                //  We need to align between static & dynamic cases (pass broadcasting mask in static case also?)
+                sch_offsets[i] = bmask[i] ? dataSize : 0;
                 // if outer tile is broadcasted then we need to step back to read the same data once again
             } else if (input_shape[input_shape.size() - 2] != static_master_shape[static_master_shape.size() - 2] && input_shape.back() != 1) {
                 sch_offsets[i] = -1 * static_master_shape[static_master_shape.size() - 1] * dataSize;

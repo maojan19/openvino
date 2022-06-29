@@ -266,6 +266,7 @@ void TileSchedulerEmitter::emit_tiles(const Reg64& reg_inner_amount, const std::
             // If Tile is evaluated only once, then we can emit its body directly and skip work_amount decrements and checks
             if (evaluate_once) {
                 tile.first->emit_body(vec_pool, gpr_pool);
+                tile.first->emit_ptr_increments(data_ptr_regs);
             } else {
                 std::vector<size_t> in_regs, out_regs;
                 std::tie(in_regs, out_regs) = tile.second;
@@ -293,7 +294,6 @@ void TileSchedulerEmitter::emit_tiles(const Reg64& reg_inner_amount, const std::
                 h->mov(reg_inner_amount, inner_work_amount);
                 // vector_tile is executed, but work_amount is neither set nor decremented appropriately.
             } else if (vector_evaluate_once) {
-                vector_tile.first -> emit_ptr_increments(data_ptr_regs);
                 h->mov(reg_inner_amount, inner_work_amount - vector_size);
             }
             // else: vector_tile is executed multiple times, so work_amount is already set
@@ -501,8 +501,10 @@ void TileEmitter::emit_body(const std::vector<size_t>& vec_pool, const std::vect
 }
 
 void TileEmitter::emit_ptr_increments(const std::vector<Reg64>& data_ptr_regs) const {
+    auto master_shape_last_dim = *std::max_element(io_dims.begin(), io_dims.end());
     for (const auto& idx : static_dims_idx) {
-        if (io_dims[idx] > 1)
+        // increment only inputs that are not broadcasted
+        if (io_dims[idx] != 1 || master_shape_last_dim == 1)
             h->add(data_ptr_regs[idx], increment * sizeof(float));
     }
 
