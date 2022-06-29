@@ -227,7 +227,12 @@ void Snippet::calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>&
                 // offset == data_size only if input_shape.back() == 1, but ScalarLoadEmitter doesn't perform increment
                 // in such cases, because it thinks it's broadcasting.
             } else if (off == dataSize) {
-                sch_offsets[i] = off;
+                // todo: data_ptr increments in case of broadcasting are handled differently in static and dynamic cases
+                //  static: if last_io_dims == 1 => assume broadcasting and skip pointer increment
+                //  dynamic: perform increments based on broadcasting mask (if no broadcasting then increment)
+                //  We need to align between static & dynamic cases (pass broadcasting mask in static case also?)
+                //sch_offsets[i] = off;
+                sch_offsets[i] = isDynamic && static_master_shape.back() == 1 ? 0 : off;
                 // if outer tile is broadcasted then we need to step back to read the same data once again
             } else if (input_shape[input_shape.size() - 2] != static_master_shape[static_master_shape.size() - 2] && input_shape.back() != 1) {
                 sch_offsets[i] = -1 * static_master_shape[static_master_shape.size() - 1] * dataSize;
@@ -445,6 +450,24 @@ void Snippet::prepareParams() {
             dstMemPtrs[i] = memPtr;
             start_offset_out[i] = memPtr->GetDescWithType<BlockedMemoryDesc>()->getOffsetPadding() * dataSize;
         }
+
+        // todo: this is a debug check, remove when sure that its ok
+//        for (const auto& dst : dstMemPtrs) {
+//            for (const auto& src : srcMemPtrs) {
+//                if (dst->GetData() == src->GetData())
+//                    IE_THROW() << "FIRST: Src & dst pointers should not coincide!";
+//            }
+//        }
+
+        std::cerr << "As recieved:\n";
+        for (size_t i = 0; i < srcMemPtrs.size(); i++) {
+            auto a = reinterpret_cast<const uint8_t*>(srcMemPtrs[i]->GetData());
+            std::cerr << i << " : " << reinterpret_cast<const void*>(a) << "\n";
+        }
+        for (size_t i = 0; i < dstMemPtrs.size(); i++) {
+            auto a = reinterpret_cast<const uint8_t*>(dstMemPtrs[i]->GetData());
+            std::cerr << i << " : " << reinterpret_cast<const void*>(a) << "\n";
+        }
     };
     // initialize start offsets to src and dst memory
     // Needs to be done for every set of input shapes sce memory ptrs could've updated
@@ -476,14 +499,33 @@ void Snippet::execute(dnnl::stream strm) {
     for (size_t i = 0; i < dstMemPtrs.size(); i++)
         call_args.dst_ptrs[i] = reinterpret_cast<uint8_t*>(dstMemPtrs[i]->GetData()) + start_offset_out[i];
 
+    // todo: this is a debug check, remove when sure that its ok
+    for (const auto& dst : call_args.dst_ptrs) {
+        for (const auto& src : call_args.src_ptrs) {
+            if (dst == src)
+                IE_THROW() << "Src & dst pointers should not coincide!";
+        }
+    }
     if (isDynamic) {
         std::cerr << "Dynamic implementation is going to be executed\n";
 //        call_args.scheduler_offsets = scheduler_offsets.data();
         std::copy(scheduler_offsets.begin(), scheduler_offsets.end(), call_args.scheduler_offsets);
+        std::cerr << "Scheduler offsets:\n";
+        for (int i = 0; i < scheduler_offsets.size(); i++)
+            std::cerr << i << " : " << call_args.scheduler_offsets[i] << "\n";
+        std::cerr << "---------------------\n";
 //        call_args.data_offsets = data_offsets.data();
         std::copy(data_offsets.begin(), data_offsets.end(), call_args.data_offsets);
+        std::cerr << "Data offsets:\n";
+        for (int i = 0; i < data_offsets.size(); i++)
+            std::cerr << i << " : " << call_args.data_offsets[i] << "\n";
+        std::cerr << "---------------------\n";
 //        call_args.scheduler_work_amounts = scheduler_work_amounts.data();
         std::copy(scheduler_work_amounts.begin(), scheduler_work_amounts.end(), call_args.scheduler_work_amounts);
+        std::cerr << "Scheduler WA:\n";
+        for (int i = 0; i < scheduler_work_amounts.size(); i++)
+            std::cerr << i << " : " << call_args.scheduler_work_amounts[i] << "\n";
+        std::cerr << "---------------------\n";
         call_args.broadcasting_mask = broadcasting_mask; // set mask to true is this io is broadcasted
 //        static_master_shape_placeholder = masterShape.get_shape();
 //        They are needed for offset optimization calculation, but we don't do it for dynamic shapes yet

@@ -1908,7 +1908,10 @@ void Eltwise::prepareParams() {
             memPtrs.push_back(getParentEdgeAt(i)->getMemoryPtr());
         memPtrs.push_back(getChildEdgeAt(0)->getMemoryPtr());
     }
-
+    for (int i=0; i < memPtrs.size() - 1; i++) {
+        if (memPtrs[i]->GetData() == memPtrs.back()->GetData())
+            IE_THROW() << "Memory ptrs should not coincide";
+    }
     auto outBlockingDesc = getChildEdgeAt(0)->getMemory().GetDescWithType<BlockedMemoryDesc>();
     const auto &outOrder = outBlockingDesc->getOrder();
     const auto &currentOutBlkDims = outBlockingDesc->getBlockDims();
