@@ -44,16 +44,33 @@ INSTANTIATE_TEST_SUITE_P(smoke_Snippets_Eltwise, AddSinhConst,
 //        {{16, 29, ngraph::Dimension(1, 512)}, {{16, 29, 1}}}
 //    };
 
-InputShape inShapesDynamic1 = {{16, 6, ngraph::Dimension(1, 512)}, {{16, 6, 16}}};
+//InputShape inShapesDynamic1 = {{16, 6, ngraph::Dimension(1, 512)}, {{16, 6, 16}}};
+//std::vector<InputShape> inShapesDynamic2 = {
+//            {{16, 6, ngraph::Dimension(1, 512)}, {{16, 6, 16}}}, // no broadcasting on inner Tile => Ok
+//            {{16, 6, ngraph::Dimension(1, 512)}, {{16, 6, 1}}}
+//};
+
+std::vector<InputShape> inShapesDynamic1 = {{{16, 1, ngraph::Dimension(1, 512)}, {{16, 1, 1}}}};
 std::vector<InputShape> inShapesDynamic2 = {
-            {{16, 6, ngraph::Dimension(1, 512)}, {{16, 6, 16}}}, // no broadcasting on inner Tile => Ok
-            {{16, 6, ngraph::Dimension(1, 512)}, {{16, 6, 1}}}
+//    {{16, 6, ngraph::Dimension(1, 512)}, {{16, 6, 1}}},
+    {{16, 1, ngraph::Dimension(1, 512)}, {{16, 1, 7}}},
+//    {{16, 6, ngraph::Dimension(1, 512)}, {{16, 6, 30}}},
+//    {{16, 6, ngraph::Dimension(1, 512)}, {{16, 6, 32}}},
 };
 
-INSTANTIATE_TEST_SUITE_P(smoke_Snippets_Eltwise, AddSinhDynamic,
+INSTANTIATE_TEST_SUITE_P(smoke_Snippets_Eltwise_1, AddSinhDynamic,
                          ::testing::Combine(
-                             ::testing::Values(inShapesDynamic1),
+                             ::testing::ValuesIn(inShapesDynamic1),
                              ::testing::ValuesIn(inShapesDynamic2),
+                             ::testing::Values(3), // Add + 2 converts after inputs
+                             ::testing::Values(1), // Subgraph is created, since the inputs are followed by converts
+                             ::testing::Values(CommonTestUtils::DEVICE_CPU)),
+                         AddSinhDynamic::getTestCaseName);
+
+INSTANTIATE_TEST_SUITE_P(smoke_Snippets_Eltwise_2, AddSinhDynamic,
+                         ::testing::Combine(
+                             ::testing::ValuesIn(inShapesDynamic2),
+                             ::testing::ValuesIn(inShapesDynamic1),
                              ::testing::Values(3), // Add + 2 converts after inputs
                              ::testing::Values(1), // Subgraph is created, since the inputs are followed by converts
                              ::testing::Values(CommonTestUtils::DEVICE_CPU)),
