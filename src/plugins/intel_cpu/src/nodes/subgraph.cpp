@@ -223,8 +223,7 @@ void Snippet::calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>&
             const auto& input_shape = inputShapes[i].get_shape();
             if (off > dataSize) {
                 sch_offsets[i] = 0;
-                // offset == data_size only if input_shape.back() == 1, but ScalarLoadEmitter doesn't perform increment
-                // in such cases, because it thinks it's broadcasting.
+                // increment data ptrs in outer tile if inner tile is broadcasted
             } else if (off == dataSize) {
                 sch_offsets[i] = bmask[i] ? dataSize : 0;
                 // if outer tile is broadcasted then we need to step back to read the same data once again
@@ -299,6 +298,7 @@ void Snippet::optimizeExecDomain(std::vector<PartialShape>& inputShapes, std::ve
         }
         return domain.get_shape();
     };
+    findDimsToCollapse();
 }
 void Snippet::normalizeShapes() {
     auto edgeToBlockedShape = [](const EdgePtr& edge) {
@@ -446,18 +446,10 @@ void Snippet::execute(dnnl::stream strm) {
         call_args.dst_ptrs[i] = reinterpret_cast<uint8_t*>(dstMemPtrs[i]->GetData()) + start_offset_out[i];
 
     if (isDynamic) {
-        std::cerr << "Dynamic implementation is going to be executed\n";
-//        call_args.scheduler_offsets = scheduler_offsets.data();
         std::copy(scheduler_offsets.begin(), scheduler_offsets.end(), call_args.scheduler_offsets);
-//        call_args.data_offsets = data_offsets.data();
         std::copy(data_offsets.begin(), data_offsets.end(), call_args.data_offsets);
-//        call_args.scheduler_work_amounts = scheduler_work_amounts.data();
         std::copy(scheduler_work_amounts.begin(), scheduler_work_amounts.end(), call_args.scheduler_work_amounts);
         call_args.broadcasting_mask = broadcasting_mask; // set mask to true is this io is broadcasted
-//        static_master_shape_placeholder = masterShape.get_shape();
-//        They are needed for offset optimization calculation, but we don't do it for dynamic shapes yet
-//        call_args.master_shape = static_master_shape_placeholder.data();
-//        call_args.masterRank = static_master_shape_placeholder.size();
     }
 
     if (tensorRank == rank6D) {
@@ -513,7 +505,6 @@ void Snippet::schedule_6d(const jit_snippets_call_args& call_args) const {
     parallel_for5d(dom[0], dom[1], dom[2], dom[3], dom[4],
         [&](int64_t d0, int64_t d1, int64_t d2, int64_t d3, int64_t d4) {
             int64_t indexes[] = {d0, d1, d2, d3, d4};
-            std::cerr << dom[0] << " " << dom[1] << " " << dom[2] << " " << dom[3] << " " << dom[4] << "\n";
             schedule.get_callable<kernel>()(indexes, &call_args);
         });
 }

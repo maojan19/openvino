@@ -321,7 +321,6 @@ private:
 
     template <dnnl::impl::cpu::x64::cpu_isa_t isa>
     void emit_isa(const std::vector<size_t> &in, const std::vector<size_t> &out) const;
-    size_t index;
 };
 
 class BroadcastLoadEmitter : public MemoryEmitter {

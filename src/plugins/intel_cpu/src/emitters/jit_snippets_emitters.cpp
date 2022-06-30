@@ -370,7 +370,6 @@ void TileSchedulerEmitter::emit_dynamic_impl(const std::vector<size_t>& in,
                                             const std::vector<size_t>& vec_pool,
                                             const std::vector<size_t>& gpr_pool,
                                             const ov::intel_cpu::emitter_context *emit_context) const {
-    std::cerr << "Dynamic implementation is being compiled\n";
     const size_t num_inputs = in[0];
     const size_t num_outputs = in[1];
     const size_t vector_size = in[2];
@@ -758,10 +757,6 @@ void ScalarStoreEmitter::emit_isa(const std::vector<size_t> &in, const std::vect
 LoadEmitter::LoadEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,
                          const std::shared_ptr<ov::Node>& n)
                          : MemoryEmitter(h, isa, n) {
-    if (auto load = std::dynamic_pointer_cast<ngraph::snippets::op::Load>(n))
-        index = load->input_index;
-    else
-        IE_THROW() << "Invalid node type is provided to LoadEmitter";
     in_out_type_ = emitter_in_out_map::gpr_to_vec;
 }
 
@@ -789,15 +784,6 @@ void LoadEmitter::emit_isa(const std::vector<size_t> &in, const std::vector<size
     Reg64 in_reg(static_cast<int>(in[0]));
     Vmm vmm_src0 = Vmm(out[0]);
     h->uni_vmovups(vmm_src0, h->ptr[in_reg]);
-//    auto reg_const_params = Reg64(dnnl::impl::cpu::x64::abi_param2.getIdx());
-//    h->bt(h->ptr[reg_const_params + GET_OFF(broadcasting_mask)], index);
-//    Label broadcast, end;
-//    h->jb(broadcast, CodeGenerator::T_SHORT);
-//    h->uni_vmovups(vmm_src0, h->ptr[in_reg]);
-//    h->jmp(end);
-//    h->L(broadcast);
-//    h->uni_vbroadcastss(vmm_src0, h->ptr[in_reg]);
-//    h->L(end);
 }
 
 BroadcastLoadEmitter::BroadcastLoadEmitter(dnnl::impl::cpu::x64::jit_generator* h, dnnl::impl::cpu::x64::cpu_isa_t isa,

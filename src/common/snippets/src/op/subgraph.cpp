@@ -175,14 +175,12 @@ PartialShape snippets::op::Subgraph::canonicalize(const BlockedShapeVector& outp
         NODE_VALIDATION_CHECK(this,
                               PartialShape::broadcast_merge_into(tmpPShape, inShape, ::ngraph::op::AutoBroadcastType::NUMPY),
                               "Failed to create broadcastable shapes in snippets canonicalization");
-//        const auto paramShape = m_body->get_parameters()[i]->get_shape();
         const auto paramShape = m_body->get_parameters()[i]->get_partial_shape();
         if (paramShape.size() != inShape.size() || !equal(paramShape.begin(), paramShape.end(), inShape.begin()))
                 m_body->replace_parameter(i, std::make_shared<opset1::Parameter>(inType, inShape));
     }
 
     m_body->validate_nodes_and_infer_types();
-//    auto skipStartEndOnes = [](const Shape& shape) {
         auto skipStartEndOnes = [](const PartialShape& shape) {
         auto begin = shape.begin();
         auto end = shape.end();
@@ -198,10 +196,8 @@ PartialShape snippets::op::Subgraph::canonicalize(const BlockedShapeVector& outp
 
     // Check that output shapes are broadcastable => can be scheduled
     const auto& body_results = m_body->get_results();
-//    PartialShape outPShape = body_results[0]->get_shape();
     PartialShape outPShape = body_results[0]->get_input_partial_shape(0);
     for (size_t i = 0; i < body_results.size(); i++) {
-//        auto shape_i = body_results[i]->get_shape();
         auto shape_i = body_results[i]->get_input_partial_shape(0);
         auto outputShape_i = std::get<0>(outputShapes[i]);
         // Check that the produced output shape corresponds to the passed shape
@@ -220,7 +216,6 @@ PartialShape snippets::op::Subgraph::canonicalize(const BlockedShapeVector& outp
                                                                ::ngraph::op::AutoBroadcastType::NUMPY);
         NODE_VALIDATION_CHECK(this, compatibleWithOtherOutputs, "Snippets output shapes must be numpy broadcastable");
     }
-//    master_shape = outPShape.get_shape();
     master_shape = outPShape;
     return master_shape;
 }
@@ -257,14 +252,6 @@ void snippets::op::Subgraph::convert_to_snippet_dialect() {
     if (!inputs_has_dynamic_last_dims) {
         manager.register_pass<snippets::pass::InsertMoveBroadcast>();
     }
-//    Todo: an alternative solution is to skip only dynamic nodes. Leave for now, but remove as soon as dynamicTile works
-//    if (master_shape.is_dynamic()) {
-//        auto skip_dynamic_node = [](const std::shared_ptr<const ov::Node>& n) -> bool {
-//            return n->get_input_partial_shape(0).is_dynamic();
-//        };
-//        manager.get_pass_config()->
-//            set_callback<ngraph::snippets::pass::InsertMoveBroadcast>(skip_dynamic_node);
-//    }
     manager.register_pass<snippets::pass::LoadMoveBroadcastToBroadcastLoad>();
     // Note that, BrodacastMove is typically inserted right after the Load. Such cases are typical for
     // simple subgraphs where one of the ngraph::op's inputs is broadcasted to match the larger one. However, BroadcastMove
@@ -281,7 +268,6 @@ void snippets::op::Subgraph::convert_to_snippet_dialect() {
     //                         Store
     //                        Result
     // Note: Load* should be replaced with ScalarLoad in this example to avoid invalid read in vector Tile.
-//    if (!master_shape.empty() && master_shape.back() != 1) {
     if (master_shape.size() != 0 && !inputs_has_dynamic_last_dims && master_shape[master_shape.size() - 1] != 1) {
         manager.register_pass<snippets::pass::ReplaceLoadsWithScalarLoads>();
         manager.register_pass<snippets::pass::ReplaceStoresWithScalarStores>();
