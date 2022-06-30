@@ -184,7 +184,6 @@ void Snippet::calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>&
 
     for (size_t i = 0; i < inputShapes.size(); i++)
         bmask[i] = static_master_shape.back() != 1 && inputShapes[i].rbegin()->get_length() == 1;
-    std::cerr << "Brodacasting mask: " << bmask << "\n";
 
     // Note that wen don't need offset for the last dim, since it's handled directly by Load/Store emitters
     const size_t offset_rank = static_master_shape.size() - 1;
@@ -468,7 +467,7 @@ bool Snippet::created() const {
 }
 
 bool Snippet::canBeInPlace() const {
-    if (getParentEdgesAtPort(0)[0]->getParent()->getType() == Type::Input) {
+    if (isDynamic || getParentEdgesAtPort(0)[0]->getParent()->getType() == Type::Input) {
         return false;
     }
 
