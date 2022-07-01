@@ -175,15 +175,31 @@ void Snippet::initSupportedPrimitiveDescriptors() {
 void Snippet::selectOptimalPrimitiveDescriptor() {
     selectPreferPrimitiveDescriptor(getPrimitivesPriority(), true);
 }
-void Snippet::calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>& sch_offsets, std::bitset<16>& bmask) const {
+void Snippet::calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>& sch_offsets, std::bitset<16>& bmask,
+                            std::vector<int64_t>& vector_tile_inc, std::vector<int64_t>& scalar_tile_inc) const {
     const auto &inputShapes = normInputShapes;
     const auto &outputShapes = normOutputShapes;
     const auto& static_master_shape = masterShape.get_shape();
     const size_t numInputs = normInputShapes.size();
     const size_t numParams = numInputs + normOutputShapes.size();
 
-    for (size_t i = 0; i < inputShapes.size(); i++)
-        bmask[i] = static_master_shape.back() != 1 && inputShapes[i].rbegin()->get_length() == 1;
+    int io_index = 0;
+    for (const auto& ps : inputShapes)
+        // bmask is true if the input/output is broadcasted
+        bmask[io_index++] = static_master_shape.back() != 1 && ps.rbegin()->get_length() == 1;
+    for (const auto& ps : outputShapes)
+        bmask[io_index++] = static_master_shape.back() != 1 && ps.rbegin()->get_length() == 1;
+
+    // explicit tile increments are needed only for dynamic case
+    if (isDynamic) {
+        vector_tile_inc.resize(io_index);
+        scalar_tile_inc.resize(io_index);
+        for (int i = 0; i < io_index; i++) {
+            const bool not_broadcasted = !bmask[i];
+            vector_tile_inc[i] = isa_num_lanes * sizeof(float) * not_broadcasted;
+            scalar_tile_inc[i] = sizeof(float) * not_broadcasted;
+        }
+    }
 
     // Note that wen don't need offset for the last dim, since it's handled directly by Load/Store emitters
     const size_t offset_rank = static_master_shape.size() - 1;
@@ -394,7 +410,8 @@ void Snippet::prepareParams() {
     optimizeExecDomain(normInputShapes, normOutputShapes, masterShape, tileRank);
     exec_domain = masterShape.get_shape();
 
-    calcJITParams(data_offsets, scheduler_offsets, broadcasting_mask);
+    // todo: probably better to pass a call_args instance
+    calcJITParams(data_offsets, scheduler_offsets, broadcasting_mask, vector_tile_increments, scalar_tile_increments);
     auto initStartMemoryOffsets = [this]() {
         const auto config = getSelectedPrimitiveDescriptor()->getConfig();
         const size_t numInputs = inputShapes.size();
@@ -448,6 +465,8 @@ void Snippet::execute(dnnl::stream strm) {
         std::copy(scheduler_offsets.begin(), scheduler_offsets.end(), call_args.scheduler_offsets);
         std::copy(data_offsets.begin(), data_offsets.end(), call_args.data_offsets);
         std::copy(scheduler_work_amounts.begin(), scheduler_work_amounts.end(), call_args.scheduler_work_amounts);
+        std::copy(vector_tile_increments.begin(), vector_tile_increments.end(), call_args.vector_tile_increments);
+        std::copy(scalar_tile_increments.begin(), scalar_tile_increments.end(), call_args.scalar_tile_increments);
         call_args.broadcasting_mask = broadcasting_mask; // set mask to true is this io is broadcasted
         // scratchpad memory has to ba allocated only once
         // todo: adjust this memory allocation for different supported precisions in future

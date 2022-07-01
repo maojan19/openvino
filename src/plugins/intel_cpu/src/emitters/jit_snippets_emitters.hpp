@@ -28,7 +28,10 @@ struct jit_snippets_call_args {
     size_t scheduler_work_amounts[SNIPPETS_MAX_TILE_RANK] = {};
     int64_t data_offsets[SNIPPETS_MAX_SNIPPETS_DIMS * SNIPPETS_MAX_HARNESS_DIMS] = {};
     float* broadcasting_scratchpad = nullptr;
-    std::bitset<16> broadcasting_mask = {}; // bit is set if broadcasting over this io takes place
+    std::bitset<16> broadcasting_mask = {};
+//    bool broadcasting_mask[SNIPPETS_MAX_SNIPPETS_DIMS] = {}; // bit is set if broadcasting over this io takes place
+    int64_t vector_tile_increments[SNIPPETS_MAX_SNIPPETS_DIMS] = {};
+    int64_t scalar_tile_increments[SNIPPETS_MAX_SNIPPETS_DIMS] = {};
 };
 
 struct jit_snippets_compile_args {
@@ -168,8 +171,8 @@ public:
                    const std::vector<size_t> &gpr) const override;
 
     void emit_body(const std::vector<size_t>& vec_pool, const std::vector<size_t>& gpr_pool) const;
-    void emit_ptr_increments(const std::vector<Reg64>& data_ptr_regs) const;
-    void emit_data() const override;
+    void emit_ptr_increments_static(const std::vector<Reg64>& data_ptr_regs) const;
+    void emit_ptr_increments_dynamic(const Reg64& reg_const_params, const std::vector<Reg64>& data_ptr_regs) const;
     template <dnnl::impl::cpu::x64::cpu_isa_t isa>
     void set_increments_and_broadcast_inputs(const Reg64& reg_const_params, const std::vector<Reg64> &data_ptr_regs) const;
     void cleanup_broadcasting(const Reg64& reg_const_params, const std::vector<Reg64> &data_ptr_regs) const;

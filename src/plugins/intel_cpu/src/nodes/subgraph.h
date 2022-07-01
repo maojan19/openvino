@@ -52,7 +52,8 @@ private:
     static  ov::PartialShape prependWithOnes(const PartialShape& dims, size_t rank);
     void normalizeShapes();
     void optimizeExecDomain(std::vector<PartialShape>&, std::vector<PartialShape>&, PartialShape&, size_t&) const;
-    void calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>& sch_offsets, std::bitset<16>& broadcasting_mask) const;
+    void calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>& sch_offsets, std::bitset<16>& broadcasting_mask,
+                       std::vector<int64_t>& vector_tile_increments, std::vector<int64_t>& scalar_tile_increments) const;
 
     void generate(const jit_snippets_compile_args*);
 
@@ -92,6 +93,8 @@ private:
     std::bitset<16> broadcasting_mask; // needed to pass broadcasting info in dynamic case
     std::vector<size_t> scheduler_work_amounts;
     std::vector<size_t> static_master_shape_placeholder = {}; // placeholder to pass per-inference static master_shape for dynamic cases
+    std::vector<int64_t> vector_tile_increments = {}; // increments for vector (and scalar) tiles used in dynamic tiles.
+    std::vector<int64_t> scalar_tile_increments = {};
 
     // this is needed for fast shape inference of blocking-invariant prepended shapes
     std::vector<bool> inputShapeIsBlocked = {}; // we need this info to shape-infer mixed layouts
