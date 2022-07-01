@@ -52,7 +52,7 @@ private:
     static  ov::PartialShape prependWithOnes(const PartialShape& dims, size_t rank);
     void normalizeShapes();
     void optimizeExecDomain(std::vector<PartialShape>&, std::vector<PartialShape>&, PartialShape&, size_t&) const;
-    void calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>& sch_offsets, std::bitset<16>& broadcasting_mask,
+    void calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>& sch_offsets, std::vector<bool>& broadcasting_mask,
                        std::vector<int64_t>& vector_tile_increments, std::vector<int64_t>& scalar_tile_increments) const;
 
     void generate(const jit_snippets_compile_args*);
@@ -90,7 +90,7 @@ private:
 
     std::vector<int64_t> data_offsets;
     std::vector<int64_t> scheduler_offsets;
-    std::bitset<16> broadcasting_mask; // needed to pass broadcasting info in dynamic case
+    std::vector<bool> broadcasting_mask; // one bool for every input/output. If true then this input is broadcasted
     std::vector<size_t> scheduler_work_amounts;
     std::vector<size_t> static_master_shape_placeholder = {}; // placeholder to pass per-inference static master_shape for dynamic cases
     std::vector<int64_t> vector_tile_increments = {}; // increments for vector (and scalar) tiles used in dynamic tiles.

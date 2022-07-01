@@ -28,8 +28,7 @@ struct jit_snippets_call_args {
     size_t scheduler_work_amounts[SNIPPETS_MAX_TILE_RANK] = {};
     int64_t data_offsets[SNIPPETS_MAX_SNIPPETS_DIMS * SNIPPETS_MAX_HARNESS_DIMS] = {};
     float* broadcasting_scratchpad = nullptr;
-    std::bitset<16> broadcasting_mask = {};
-//    bool broadcasting_mask[SNIPPETS_MAX_SNIPPETS_DIMS] = {}; // bit is set if broadcasting over this io takes place
+    bool broadcasting_mask[SNIPPETS_MAX_SNIPPETS_DIMS] = {}; // bit is set if broadcasting over this io takes place
     int64_t vector_tile_increments[SNIPPETS_MAX_SNIPPETS_DIMS] = {};
     int64_t scalar_tile_increments[SNIPPETS_MAX_SNIPPETS_DIMS] = {};
 };

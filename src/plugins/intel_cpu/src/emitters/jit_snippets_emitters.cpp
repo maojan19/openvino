@@ -528,9 +528,9 @@ void TileEmitter::set_increments_and_broadcast_inputs(const Reg64& reg_const_par
             auto idx = dynamic_dims_idx[i];
             const auto& data_ptr_reg = data_ptr_regs[idx];
             // todo: we can store dynamic broadcasting info only for dynamic inputs (not for all, like we do now)
-            h->bt(h->ptr[reg_const_params + GET_OFF(broadcasting_mask)], idx); // idx->i
-            Label no_broadcasting, end_broadcasting_handling;
-            h->jae(no_broadcasting, CodeGenerator::T_SHORT); // CF==0 <=> broadcasting_mask[idx] == false
+            h->cmp(h->byte[reg_const_params + GET_OFF(broadcasting_mask) + idx * sizeof(bool)], 0);
+            Label no_broadcasting;
+            h->je(no_broadcasting, CodeGenerator::T_SHORT);
             // Both inputs and outputs can be dynamic, but only inputs could be physically broadcasted
             // Physical broadcasting is only required for vector tiles
             if (idx < num_inputs && increment != 1) {
@@ -552,11 +552,10 @@ void TileEmitter::cleanup_broadcasting(const Reg64& reg_const_params, const std:
         const auto& idx = *i;
         if (idx >= num_inputs)
             continue;
-        // Both inputs and outputs can be dynamics, but only inputs could be broadcasted
         // todo: we can store dynamic broadcasting info only for dynamic inputs (not for all, like we do now)
-        h->bt(h->ptr[reg_const_params + GET_OFF(broadcasting_mask)], idx); // idx->i
         Label no_broadcasting;
-        h->jae(no_broadcasting, CodeGenerator::T_SHORT); // CF==0 <=> broadcasting_mask[idx] == false
+        h->cmp(h->byte[reg_const_params + GET_OFF(broadcasting_mask) + idx * sizeof(bool)], 0);
+        h->je(no_broadcasting, CodeGenerator::T_SHORT);
         h->pop(data_ptr_regs[idx]);
         h->L(no_broadcasting);
     }

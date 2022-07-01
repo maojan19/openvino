@@ -175,7 +175,7 @@ void Snippet::initSupportedPrimitiveDescriptors() {
 void Snippet::selectOptimalPrimitiveDescriptor() {
     selectPreferPrimitiveDescriptor(getPrimitivesPriority(), true);
 }
-void Snippet::calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>& sch_offsets, std::bitset<16>& bmask,
+void Snippet::calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>& sch_offsets, std::vector<bool>& bmask,
                             std::vector<int64_t>& vector_tile_inc, std::vector<int64_t>& scalar_tile_inc) const {
     const auto &inputShapes = normInputShapes;
     const auto &outputShapes = normOutputShapes;
@@ -184,6 +184,7 @@ void Snippet::calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>&
     const size_t numParams = numInputs + normOutputShapes.size();
 
     int io_index = 0;
+    bmask.resize(inputShapes.size() + outputShapes.size());
     for (const auto& ps : inputShapes)
         // bmask is true if the input/output is broadcasted
         bmask[io_index++] = static_master_shape.back() != 1 && ps.rbegin()->get_length() == 1;
@@ -467,7 +468,7 @@ void Snippet::execute(dnnl::stream strm) {
         std::copy(scheduler_work_amounts.begin(), scheduler_work_amounts.end(), call_args.scheduler_work_amounts);
         std::copy(vector_tile_increments.begin(), vector_tile_increments.end(), call_args.vector_tile_increments);
         std::copy(scalar_tile_increments.begin(), scalar_tile_increments.end(), call_args.scalar_tile_increments);
-        call_args.broadcasting_mask = broadcasting_mask; // set mask to true is this io is broadcasted
+        std::copy(broadcasting_mask.begin(), broadcasting_mask.end(), call_args.broadcasting_mask);
         // scratchpad memory has to ba allocated only once
         // todo: adjust this memory allocation for different supported precisions in future
        if (scratchpad_memory_chunk.empty())
@@ -478,7 +479,7 @@ void Snippet::execute(dnnl::stream strm) {
        // schedule_6d_dynamic is needed only if an input needs to be broadcasted
        // => per-thread broadcasting scratchpads are needed.
        // Fall back to  schedule_6d to avoid scratchpad handling overheads
-       if (call_args.broadcasting_mask.any())
+       if (std::any_of(broadcasting_mask.begin(), broadcasting_mask.end(), [](bool x){return x;}))
            schedule_6d_dynamic(call_args);
        else
            schedule_6d(call_args);
