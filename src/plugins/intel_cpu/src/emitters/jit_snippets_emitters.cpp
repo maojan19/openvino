@@ -532,7 +532,8 @@ void TileEmitter::set_increments_and_broadcast_inputs(const Reg64& reg_const_par
             if (idx < num_inputs && increment != 1) {
                 h->push(data_ptr_reg);
                 h->uni_vbroadcastss(Vmm_tmp, h->ptr[data_ptr_reg]);
-                h->mov(data_ptr_reg, dynamic_broadcasting[i]);
+                h->mov(data_ptr_reg, h->ptr[reg_const_params + GET_OFF(broadcasting_scratchpad)]);
+                h->add(data_ptr_reg, i * increment * sizeof(float));
                 // note that we use data_ptr_reg directly without h->rip
                 h->uni_vmovups(h->ptr[data_ptr_reg], Vmm_tmp);
             }

@@ -37,7 +37,6 @@ Snippet::Snippet(const std::shared_ptr<ngraph::Node>& op, const dnnl::engine& en
         : Node(op, eng, cache) {
     host_isa = dnnl::impl::cpu::x64::mayiuse(dnnl::impl::cpu::x64::avx512_common) ?
         dnnl::impl::cpu::x64::avx512_common : dnnl::impl::cpu::x64::avx2;
-
     // Create a deep local copy of the input snippet to perform canonicalization & code generation
     // Todo: Probably better to implement a proper copy constructor
     if (const auto tmp_snippet =  ov::as_type_ptr<ngraph::snippets::op::Subgraph>(op)) {
@@ -54,6 +53,7 @@ Snippet::Snippet(const std::shared_ptr<ngraph::Node>& op, const dnnl::engine& en
     } else {
         IE_THROW(NotImplemented) << "Node is not an instance of snippets::op::Subgraph";
     }
+    isa_num_lanes =  snippet->get_generator()->get_target_machine()->get_lanes();
 }
 
 ov::PartialShape Snippet::prependWithOnes(const PartialShape& dims, size_t rank) {
@@ -449,12 +449,26 @@ void Snippet::execute(dnnl::stream strm) {
         std::copy(data_offsets.begin(), data_offsets.end(), call_args.data_offsets);
         std::copy(scheduler_work_amounts.begin(), scheduler_work_amounts.end(), call_args.scheduler_work_amounts);
         call_args.broadcasting_mask = broadcasting_mask; // set mask to true is this io is broadcasted
-    }
-
-    if (tensorRank == rank6D) {
-        schedule_6d(call_args);
+        // scratchpad memory has to ba allocated only once
+        // todo: adjust this memory allocation for different supported precisions in future
+       if (scratchpad_memory_chunk.empty())
+           scratchpad_memory_chunk.resize(parallel_get_num_threads() * isa_num_lanes * inputShapes.size());
+       call_args.broadcasting_scratchpad = scratchpad_memory_chunk.data();
+       if (tensorRank != rank6D)
+           IE_THROW() << "Snippets currently support only up to 6D dynamic inputs";
+       // schedule_6d_dynamic is needed only if an input needs to be broadcasted
+       // => per-thread broadcasting scratchpads are needed.
+       // Fall back to  schedule_6d to avoid scratchpad handling overheads
+       if (call_args.broadcasting_mask.any())
+           schedule_6d_dynamic(call_args);
+       else
+           schedule_6d(call_args);
     } else {
-        schedule_nt(call_args);
+        if (tensorRank == rank6D) {
+            schedule_6d(call_args);
+        } else {
+            schedule_nt(call_args);
+        }
     }
 }
 
@@ -496,6 +510,21 @@ void Snippet::generate(const jit_snippets_compile_args* jcp) {
         harness_num_dims = SNIPPETS_MAX_HARNESS_DIMS;
     }
     schedule = snippet->generate(reinterpret_cast<const void*>(jcp));
+}
+
+void Snippet::schedule_6d_dynamic(const jit_snippets_call_args& call_args) const {
+    const auto& dom = exec_domain;
+    std::vector<jit_snippets_call_args> per_thread_call_args(parallel_get_num_threads(), call_args);
+    const size_t scratchpad_size = isa_num_lanes * inputShapes.size();
+    // init unique scratchpad per every thread to perform physical broadcasting
+    for (int i = 0; i < per_thread_call_args.size(); i++)
+        per_thread_call_args[i].broadcasting_scratchpad += i * scratchpad_size;
+
+    parallel_for5d(dom[0], dom[1], dom[2], dom[3], dom[4],
+                   [&](int64_t d0, int64_t d1, int64_t d2, int64_t d3, int64_t d4) {
+                       int64_t indexes[] = {d0, d1, d2, d3, d4};
+                       schedule.get_callable<kernel>()(indexes, &per_thread_call_args[parallel_get_thread_num()]);
+                   });
 }
 
 void Snippet::schedule_6d(const jit_snippets_call_args& call_args) const {

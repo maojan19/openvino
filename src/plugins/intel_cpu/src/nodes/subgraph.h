@@ -58,6 +58,7 @@ private:
 
     // Evaluates generated snippet using parallel backend
     void schedule_6d(const jit_snippets_call_args& const_args) const;
+    void schedule_6d_dynamic(const jit_snippets_call_args& const_args) const;
     void schedule_nt(const jit_snippets_call_args& const_args) const;
 
     // Local copy of subgraph node for canonization & code generation
@@ -68,6 +69,7 @@ private:
 
     // Holds ISA version used is codeGeneration target
     dnnl::impl::cpu::x64::cpu_isa_t host_isa;
+    size_t isa_num_lanes; // number of elements that fit in vector size
 
     // Holds index of output used as in execution domain
     // it should be compatible with a schedule's work size
@@ -112,6 +114,8 @@ private:
     std::vector<int64_t> sch_offsets_in = {};
     std::vector<int64_t> sch_offsets_out = {};
     bool canUseOptimizedImpl = true;
+    // memory buffer for physical broadcasting in dynamic case, use std::vector to facilitate memory management
+    std::vector<float> scratchpad_memory_chunk = {};
 };
 
 }   // namespace node
