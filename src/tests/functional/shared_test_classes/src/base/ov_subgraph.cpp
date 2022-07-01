@@ -163,15 +163,6 @@ void SubgraphBaseTest::compare(const std::vector<ov::Tensor>& expected,
                     inputNode = nextNodePtr;
                 }
             }
-            ///
-            auto num_elems = expected[j].get_size();
-            auto ex = expected[j].data<float>();
-            auto ac = actual[j].data<float>();
-            std::cerr << "Expected : actual\n";
-            for (int k = 0; k < num_elems; k++) {
-                std::cerr << k << " | " << ex[k] << " : " << ac[k] << "\n";
-            }
-            ///
             auto it = compareMap.find(inputNode->get_type_info());
             it->second(inputNode, i, expected[j], actual[j], abs_threshold, rel_threshold);
         }
