@@ -268,7 +268,7 @@ void Snippet::calcJITParams(std::vector<int64_t>& offsets, std::vector<int64_t>&
                 // offset == data_size only if input_shape.back() == 1, but ScalarLoadEmitter doesn't perform increment
                 // in such cases, because it thinks it's broadcasting.
             } else if (off == dataSize[i]) {
-                sch_offsets[i] = bmask[i] ? dataSize : 0;
+                sch_offsets[i] = bmask[i] ? dataSize[i] : 0;
                 // if outer tile is broadcasted then we need to step back to read the same data once again
                 // NB! we don't need to step back if scalar/vector tile is executed only once,
                 // because increments are not emitted in this case. See jit_snippets_emitters.cpp for more details

@@ -219,7 +219,7 @@ void KernelEmitter::emit_impl(const std::vector<size_t>& in,
         if (auto tile_scheduler = std::dynamic_pointer_cast<TileSchedulerEmitter>(emitter)) {
             // dynamic TileScheduler needs const runtime params
             if (!is_static) {
-                in_regs.push_back(static_cast<size_t>(dnnl::impl::cpu::x64::abi_param2.getIdx()));
+                in_regs.push_back(static_cast<size_t>(abi_param2.getIdx()));
             }
             out_regs = gp_regs_used;
         }
@@ -306,7 +306,7 @@ void TileSchedulerEmitter::emit_tiles(const Reg64& reg_inner_amount, const std::
             // else: vector_tile is executed multiple times, so work_amount is already set
         } else {
             if (vector_evaluate_once) {
-                vector_tile.first->emit_ptr_increments(data_ptr_regs);
+                vector_tile.first->emit_ptr_increments_static(data_ptr_regs);
             }
         }
         process_tile(scalar_evaluate_once, scalar_tile);
