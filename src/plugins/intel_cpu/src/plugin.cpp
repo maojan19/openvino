@@ -601,6 +601,9 @@ static void TransformationUpToCPUSpecificOpSet(std::shared_ptr<ngraph::Function>
     postLPTPassManager.run_passes(nGraphFunc);
 
     if (!useLpt && _enableSnippets && dnnl::impl::cpu::x64::mayiuse(dnnl::impl::cpu::x64::avx2)) {
+        // todo: debug START
+        ov::pass::Serialize("before_tokenization.xml", "before_tokenization.bin").run_on_model(nGraphFunc);
+        // debug END
         ngraph::pass::Manager tokenization_manager;
         tokenization_manager.register_pass<SnippetsMarkSkipped>();
         tokenization_manager.register_pass<ngraph::snippets::pass::EnumerateNodes>();
@@ -626,6 +629,9 @@ static void TransformationUpToCPUSpecificOpSet(std::shared_ptr<ngraph::Function>
                     return has_only_const_inputs || bad_input_rank || bad_output_rank;
                 });
         tokenization_manager.run_passes(nGraphFunc);
+        // todo: debug START
+        ov::pass::Serialize("tokenized.xml", "tokenized.bin").run_on_model(nGraphFunc);
+        // debug END
     }
 }
 

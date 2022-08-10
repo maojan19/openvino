@@ -376,14 +376,18 @@ snippets::Schedule snippets::op::Subgraph::generate(ngraph::pass::Manager& opt, 
     INTERNAL_OP_SCOPE(Subgraph);
     OV_ITT_SCOPED_TASK(ngraph::pass::itt::domains::SnippetsTransform, "Snippets::op::generate")
     NGRAPH_CHECK(m_generator != nullptr, "generate is called while generator is not set");
+    // todo: debug START
+    ov::pass::Serialize("before_conversion.xml", "before_conversion.xml").run_on_model(m_body);
+    // debug FINISH
     convert_to_snippet_dialect();
     opt.run_passes(m_body);
 
     // generation flow
     snippets::pass::AssignRegisters().run_on_model(m_body);
 
-    // schedule generation should go here and be target agnostic
-    ov::pass::Serialize("body.xml", "body.bin").run_on_model(m_body);
+    // todo: debug START
+    ov::pass::Serialize("after_conversion.xml", "after_conversion.xml").run_on_model(m_body);
+    // debug FINISH
     // actual code emission
     ngraph::snippets::code ptr = m_generator->generate(m_body, compile_params);
 

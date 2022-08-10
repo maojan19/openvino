@@ -273,7 +273,7 @@ void TileSchedulerEmitter::emit_tiles(const Reg64& reg_inner_amount, const std::
             // If Tile is evaluated only once, then we can emit its body directly and skip work_amount decrements and checks
             if (evaluate_once) {
                 tile.first->emit_body(vec_pool, gpr_pool);
-                tile.first->emit_ptr_increments_static(data_ptr_regs);
+//                tile.first->emit_ptr_increments_static(data_ptr_regs);
             } else {
                 std::vector<size_t> in_regs, out_regs;
                 std::tie(in_regs, out_regs) = tile.second;
@@ -294,6 +294,8 @@ void TileSchedulerEmitter::emit_tiles(const Reg64& reg_inner_amount, const std::
         process_tile(vector_evaluate_once, vector_tile);
     }
     if (inner_work_amount % vector_size >= 1) {
+        if (vector_evaluate_once)
+            vector_tile.first->emit_ptr_increments_static(data_ptr_regs);
         bool scalar_evaluate_once = inner_work_amount % vector_size < 2;
         if (!scalar_evaluate_once) {
             // vector_tile is not executed, work_amount is not set
@@ -304,10 +306,6 @@ void TileSchedulerEmitter::emit_tiles(const Reg64& reg_inner_amount, const std::
                 h->mov(reg_inner_amount, inner_work_amount - vector_size);
             }
             // else: vector_tile is executed multiple times, so work_amount is already set
-        } else {
-            if (vector_evaluate_once) {
-                vector_tile.first->emit_ptr_increments_static(data_ptr_regs);
-            }
         }
         process_tile(scalar_evaluate_once, scalar_tile);
     }
@@ -329,6 +327,7 @@ void TileSchedulerEmitter::emit_static_impl(const std::vector<size_t>& in,
                                      const std::vector<size_t>& vec_pool,
                                      const std::vector<size_t>& gpr_pool,
                                      const ov::intel_cpu::emitter_context *emit_context) const {
+    std::cerr << __FUNCTION__ << "\n";
     const size_t num_inputs = in[0];
     const size_t num_outputs = in[1];
     const size_t vector_size = in[2];
@@ -380,6 +379,7 @@ void TileSchedulerEmitter::emit_dynamic_impl(const std::vector<size_t>& in,
                                             const std::vector<size_t>& vec_pool,
                                             const std::vector<size_t>& gpr_pool,
                                             const ov::intel_cpu::emitter_context *emit_context) const {
+    std::cerr << __FUNCTION__ << "\n";
     const size_t num_inputs = in[0];
     const size_t num_outputs = in[1];
     const size_t vector_size = in[2];
